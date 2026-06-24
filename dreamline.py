@@ -30,7 +30,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.5"
+VERSION = "1.6.6"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
@@ -545,14 +545,26 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     load_cal()
     soort = "RTD-bridge (1046, PT100)" if rtd else "thermokoppel (1048, type %s)" % tc_type
     attached = {0: False, 1: False}
+    latest = {0: None, 1: None}     # laatste ruwe waarde via change-event (1046 vereist dit)
 
     def _both():
         return attached[0] and attached[1]
 
+    def on_change(ch_no):
+        def handler(ch, value):
+            latest[ch_no] = value
+        return handler
+
     def on_attach(ch_no):
         def handler(ch):
             attached[ch_no] = True
-            if not rtd:
+            if rtd:
+                # 1046: bridge AANzetten en elke meting laten doorkomen, anders bevriest de waarde
+                try: ch.setBridgeEnabled(True)
+                except Exception: pass
+                try: ch.setVoltageRatioChangeTrigger(0.0)
+                except Exception: pass
+            else:
                 try: ch.setThermocoupleType(_tc(tc_type))
                 except Exception: pass
             try: ch.setDataInterval(max(ch.getMinDataInterval(), 250))
@@ -573,6 +585,12 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     for ch_no in (0, 1):
         s = Channel(); s.setChannel(ch_no)
         s.setOnAttachHandler(on_attach(ch_no)); s.setOnDetachHandler(on_detach(ch_no))
+        if rtd:
+            try: s.setOnVoltageRatioChangeHandler(on_change(ch_no))
+            except Exception: pass
+        else:
+            try: s.setOnTemperatureChangeHandler(on_change(ch_no))
+            except Exception: pass
         sens[ch_no] = s
 
     STATE.set_source("wachten")
@@ -584,6 +602,9 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
         return sim_loop()
 
     def raw(ch_no):
+        # voorkeur: laatste waarde uit het change-event (blijft live). Anders 1x uitvragen.
+        if latest[ch_no] is not None:
+            return latest[ch_no]
         try:
             return sens[ch_no].getVoltageRatio() if rtd else sens[ch_no].getTemperature()
         except Exception:
