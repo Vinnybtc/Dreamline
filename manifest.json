@@ -1,0 +1,5 @@
+{
+  "version": "1.6.0",
+  "notes": "Eerste online versie van Dreamline.\n- Scherpere uitleg bij Coach & signalen\n- Veilige update- en terugdraai-functie",
+  "files": ["index.html", "dreamline.py", "qr.py"]
+}
