@@ -1,5 +1,5 @@
 {
-  "version": "1.6.0",
-  "notes": "Eerste online versie van Dreamline.\n- Scherpere uitleg bij Coach & signalen\n- Veilige update- en terugdraai-functie",
+  "version": "1.6.3",
+  "notes": "Nieuw in 1.6.3:\n- Schakelt vanzelf over van wachten naar LIVE zodra de chip wordt aangesloten (geen herstart)\n- Toont eerlijk 'Wachten op chip' als er nog geen chip is, i.p.v. demo-data\n- Historie: een roast volledig BEKIJKEN (BT/ET, RoR, mijlpalen, fasen) zoals Artisan",
   "files": ["index.html", "dreamline.py", "qr.py"]
 }

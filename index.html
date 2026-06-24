@@ -251,6 +251,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
     <button class="tool" id="btnSet">Coach</button>
     <button class="tool" id="btnPair" hidden>Koppel iPad</button>
     <button class="tool" id="btnUpd" hidden>Update<span class="dot-new"></span></button>
+    <button class="tool" id="btnFb" hidden>Feedback</button>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">Verbinden…</span></div>
   </div>
 </header>
@@ -287,6 +288,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
   </div>
   <div class="chartwrap">
     <div class="refchip" id="refChip" hidden>Referentie:&nbsp;<b id="refName"></b><button id="refClear" title="Verwijder referentie">×</button></div>
+    <div class="refchip" id="viewChip" hidden>Bekijken:&nbsp;<b id="viewName"></b><button id="viewExit" title="Terug naar live">×</button></div>
     <div class="alarmchip" id="coachAlarm" hidden></div>
     <div class="verchip" id="verChip" hidden>Nieuwe versie geïnstalleerd · <button id="verReload">ververs</button></div>
     <canvas id="c"></canvas>
@@ -424,7 +426,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.3";
 const EV_LABEL = {CHARGE:"CHARGE", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -435,6 +437,7 @@ const state = {
   bt:null, et:null, ror:null,
   t:0,                   // current roast time (s)
   ref:null,              // referentiecurve {samples,title}
+  viewing:false,         // true = een opgeslagen roast volledig bekijken (live gepauzeerd)
   coach:{ sound:true, vol:0.55, milestone:true, eta:true, alarm:true, sens:"normaal" },
 };
 
@@ -451,16 +454,22 @@ function paintConn(mode){
              connecting:["","Verbinden…"], reconnect:["demo","Verbinding herstellen…"]};
   const [cls,t]=map[mode]||map.connecting; dot.className="dot "+cls; txt.textContent=t;
 }
+function setSourcePill(mode){   // door de server gestuurd: chip | wachten | sim
+  const map={chip:["live","Live · chip"], wachten:["demo","Wachten op chip…"], sim:["demo","Demo · simulatie"]};
+  const m=map[mode]; if(!m) return;
+  const dot=$("#dot"), txt=$("#statusText"); if(dot) dot.className="dot "+m[0]; if(txt) txt.textContent=m[1];
+}
 
 /* ---------- ingest ---------- */
 function applyReading(r){               // r:{t,et,bt,ror}
+  if(state.viewing) return;             // tijdens 'Bekijk' niet overschrijven
   state.bt=r.bt; state.et=r.et; state.ror=r.ror;
   if(r.t==null) return;                 // voor CHARGE: alleen de uitlezing tonen
   state.t = r.t;
   const last = state.samples[state.samples.length-1];
   if(!last || r.t - last.t >= 0.4) state.samples.push({t:r.t, et:r.et, bt:r.bt});
 }
-function applyEvent(type, t){ if(type==="RESET"){resetState();return;} state.events[type]=t; markBtn(type); }
+function applyEvent(type, t){ if(state.viewing) return; if(type==="RESET"){resetState();return;} state.events[type]=t; markBtn(type); }
 function markBtn(type){ document.querySelectorAll(".ev").forEach(b=>{ if(b.dataset.ev===type) b.classList.add("done"); }); }
 function resetState(){ state.samples=[]; state.events={}; state.bt=state.et=state.ror=null; state.t=0;
   document.querySelectorAll(".ev").forEach(b=>b.classList.remove("done"));
@@ -482,10 +491,11 @@ function connect(){
       if(isLaptop() && !window._qrShown){ window._qrShown=true; $("#btnPair").hidden=false; setTimeout(openQr,500); } };
     es.onmessage = e=>{
       const m = JSON.parse(e.data);
-      if(m.k==="snapshot"){ if(m.version) checkServerVersion(m.version); resetState(); (m.samples||[]).forEach(s=>state.samples.push(s));
-        Object.assign(state.events, m.events||{}); Object.keys(state.events).forEach(markBtn); }
+      if(m.k==="snapshot"){ if(m.version) checkServerVersion(m.version); if(m.source_mode) setSourcePill(m.source_mode); if(!state.viewing){ resetState(); (m.samples||[]).forEach(s=>state.samples.push(s));
+        Object.assign(state.events, m.events||{}); Object.keys(state.events).forEach(markBtn); } }
       else if(m.k==="reading") applyReading(m);
       else if(m.k==="event") applyEvent(m.type, m.t);
+      else if(m.k==="status") setSourcePill(m.mode);
       else if(m.k==="reset") resetState();
     };
     es.onerror = ()=>{ if(!opened){ clearTimeout(fail); es.close(); startDemo(); }
@@ -676,15 +686,17 @@ async function openHist(){
     if(!rows.length){ el.innerHTML='<div class="empty">Nog geen roasts opgeslagen.</div>'; return; }
     el.innerHTML="";
     rows.forEach(r=>{
-      const b=document.createElement("button"); b.className="ritem";
+      const b=document.createElement("div"); b.className="ritem";
       const date=(r.created||"").replace("T"," ").slice(0,16);
       const chips=[];
       if(r.drop!=null) chips.push(`<span class="chip">${fmtTime(r.drop)} totaal</span>`);
       if(r.dtr!=null) chips.push(`<span class="chip">DTR ${r.dtr}%</span>`);
       if(r.loss!=null) chips.push(`<span class="chip">−${r.loss}% gewicht</span>`);
       chips.push(`<span class="chip src">${r.source==="import"?"Artisan":"live"}</span>`);
-      b.innerHTML=`<div class="rt">${esc(r.title)}<span class="rd">${date}</span></div><div class="rc">${chips.join("")}</div>`;
-      b.onclick=()=>setReference(r.id);
+      b.innerHTML=`<div class="rt">${esc(r.title)}<span class="rd">${date}</span></div><div class="rc">${chips.join("")}</div>`+
+        `<div class="ract" style="display:flex;gap:8px;margin-top:10px"><button class="tool" data-act="view">Bekijk</button><button class="tool" data-act="ref">Als referentie</button></div>`;
+      b.querySelector('[data-act="view"]').onclick=()=>viewRoast(r.id);
+      b.querySelector('[data-act="ref"]').onclick=()=>setReference(r.id);
       el.appendChild(b);
     });
   }catch(_){ el.innerHTML='<div class="empty">Kon historie niet laden.</div>'; }
@@ -697,6 +709,36 @@ async function setReference(id){
   }catch(_){}
 }
 function clearReference(){ state.ref=null; $("#refChip").hidden=true; }
+
+async function viewRoast(id){
+  try{
+    const r=await fetch("/api/roasts/"+id).then(x=>x.json());
+    state.ref=null; $("#refChip").hidden=true;
+    state.viewing=true;
+    state.samples=(r.samples||[]).map(s=>({t:s.t, et:s.et, bt:s.bt}));
+    state.events=Object.assign({}, r.events||{});
+    Object.keys(state.events).forEach(markBtn);
+    const last=state.samples[state.samples.length-1];
+    if(last){
+      state.t=last.t; state.bt=last.bt; state.et=last.et;
+      let j=state.samples.length-1; while(j>0 && last.t-state.samples[j].t<20) j--;
+      const a=state.samples[j];
+      state.ror=(a && last.t>a.t) ? (last.bt-a.bt)/((last.t-a.t)/60) : null;
+    }
+    $("#viewName").textContent=r.title||"Roast"; $("#viewChip").hidden=false;
+    closeOv();
+  }catch(_){}
+}
+function exitView(){
+  state.viewing=false; $("#viewChip").hidden=true; resetState();
+  if(state.mode==="live"){
+    fetch("/state").then(x=>x.json()).then(m=>{
+      (m.samples||[]).forEach(s=>state.samples.push(s));
+      Object.assign(state.events, m.events||{}); Object.keys(state.events).forEach(markBtn);
+      if(m.t!=null) state.t=m.t;
+    }).catch(()=>{});
+  }
+}
 
 function openSave(){
   $("#saveHint").textContent=""; openOv("#ovSave");
@@ -903,6 +945,17 @@ async function doUpdRollback(){
 }
 function checkServerVersion(v){ if(v && v!==APP_VERSION){ const c=$("#verChip"); if(c) c.hidden=false; } }
 
+/* ---------- feedback ---------- */
+(async function initFeedback(){
+  try{
+    const r = await fetch("/info").then(x=>x.json());
+    if(r && r.feedback_url){
+      const b = $("#btnFb");
+      if(b){ b.onclick = ()=>window.open(r.feedback_url, "_blank", "noopener"); b.hidden = false; }
+    }
+  }catch(_){}
+})();
+
 /* stap-2 knoppen */
 $("#btnHelp").onclick=()=>openHelp();
 $("#btnHist").onclick=openHist;
@@ -910,6 +963,7 @@ $("#btnSave").onclick=openSave;
 $("#btnPair").onclick=openQr;
 $("#fSave").onclick=doSave;
 $("#refClear").onclick=clearReference;
+$("#viewExit").onclick=exitView;
 $("#btnImport").onclick=()=>$("#impFile").click();
 $("#impFile").onchange=e=>importAlog(e.target.files);
 document.querySelectorAll(".qm").forEach(b=>b.onclick=()=>openHelp(b.dataset.help));

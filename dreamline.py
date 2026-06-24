@@ -23,13 +23,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 INDEX = HERE / "index.html"
 DB_PATH = HERE / "roasts.db"
+sys.path.insert(0, str(HERE))   # eigen modules (qr) vindbaar maken, ook met meegeleverde Python
 try:
     import qr            # eigen QR-generator (geen externe dependency)
 except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.0"
+VERSION = "1.6.3"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
@@ -50,6 +51,7 @@ class State:
         self.ror = None
         self.subs = []             # SSE client-queues
         self.saved_id = None       # id van automatisch opgeslagen roast (na DROP)
+        self.source_mode = "starting"   # chip | wachten | sim — wat de bron nu doet
 
     # ---- abonnees ----
     def subscribe(self):
@@ -72,10 +74,18 @@ class State:
                 except queue.Full:
                     pass
 
+    def set_source(self, mode):
+        with self.lock:
+            if self.source_mode == mode:
+                return
+            self.source_mode = mode
+        self.broadcast({"k": "status", "mode": mode})
+
     def snapshot(self):
         with self.lock:
             return {"k": "snapshot",
                     "version": VERSION,
+                    "source_mode": self.source_mode,
                     "samples": list(self.samples),
                     "events": dict(self.events)}
 
@@ -290,6 +300,7 @@ def import_alog_text(txt, name="roast"):
 def sim_loop():
     """Realistische roastcurve, zodat alles zonder hardware te testen is."""
     print("[dreamline] simulatiemodus actief (geen chip nodig)")
+    STATE.set_source("sim")
     STATE.event("CHARGE")
     t = 0.0
     while True:
@@ -445,6 +456,69 @@ def phidget_loop(bt_ch, et_ch, tc_type, period=0.5):
         time.sleep(period)
 
 
+def sensor_loop(bt_ch, et_ch, tc_type, period=0.5):
+    """Houdt de Phidget continu in de gaten en schakelt vanzelf om.
+    - Chip aangesloten -> live uitlezing.
+    - Chip nog niet / losgekoppeld -> 'wachten op chip' (geen nepdata).
+    Plug-and-play: aansluiten tijdens het draaien werkt, zonder herstart."""
+    try:
+        from Phidget22.Devices.TemperatureSensor import TemperatureSensor
+    except Exception as e:
+        print("[dreamline] Phidget-bibliotheek niet gevonden (%s) - simulatie." % e)
+        return sim_loop()
+
+    attached = {"bt": False, "et": False}
+
+    def _both():
+        return attached["bt"] and attached["et"]
+
+    def on_attach(which):
+        def handler(ch):
+            attached[which] = True
+            try: ch.setThermocoupleType(_tc(tc_type))
+            except Exception: pass
+            try: ch.setDataInterval(max(ch.getMinDataInterval(), 250))
+            except Exception: pass
+            if _both():
+                STATE.set_source("chip")
+                print("[dreamline] chip verbonden - live uitlezing actief.")
+        return handler
+
+    def on_detach(which):
+        def handler(ch):
+            attached[which] = False
+            STATE.set_source("wachten")
+            print("[dreamline] chip losgekoppeld - wachten tot hij er weer in zit.")
+        return handler
+
+    bt_s = TemperatureSensor(); bt_s.setChannel(bt_ch)
+    et_s = TemperatureSensor(); et_s.setChannel(et_ch)
+    bt_s.setOnAttachHandler(on_attach("bt")); bt_s.setOnDetachHandler(on_detach("bt"))
+    et_s.setOnAttachHandler(on_attach("et")); et_s.setOnDetachHandler(on_detach("et"))
+
+    STATE.set_source("wachten")
+    print("[dreamline] wachten op de chip - sluit de Phidget aan, omschakelen gaat vanzelf.")
+    try:
+        bt_s.open(); et_s.open()        # niet-blokkerend: koppelt vanzelf, ook later
+    except Exception as e:
+        print("[dreamline] kon de kanalen niet openen (%s) - simulatie." % e)
+        return sim_loop()
+
+    warned = False; n = 0
+    while True:
+        if _both():
+            try:
+                et = et_s.getTemperature(); bt = bt_s.getTemperature()
+                STATE.add_reading(et, bt); n += 1
+                if not warned and n > 20 and (et > 90 or bt > 90) and et < bt - 5:
+                    print("[dreamline] LET OP: ET (%.0f) lager dan BT (%.0f) - kanalen mogelijk "
+                          "omgewisseld. Gebruik [2] scannen of wissel --bt-ch/--et-ch." % (et, bt))
+                    warned = True
+            except Exception:
+                pass
+        time.sleep(period)
+
+
 # --------------------------------------------------------------------------
 # Webserver
 # --------------------------------------------------------------------------
@@ -459,6 +533,15 @@ def _manifest_url():
     try:
         if CONFIG_PATH.exists():
             u = (json.loads(CONFIG_PATH.read_text(encoding="utf-8")) or {}).get("manifest_url")
+            if u: return str(u).strip()
+    except Exception:
+        pass
+    return None
+
+def _feedback_url():
+    try:
+        if CONFIG_PATH.exists():
+            u = (json.loads(CONFIG_PATH.read_text(encoding="utf-8")) or {}).get("feedback_url")
             if u: return str(u).strip()
     except Exception:
         pass
@@ -601,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/events":
                 self._sse()
             elif path == "/info":
-                self._send(200, "application/json", json.dumps({"url": self._url()}).encode())
+                self._send(200, "application/json", json.dumps({"url": self._url(), "feedback_url": _feedback_url() or ""}).encode())
             elif path == "/api/version":
                 self._send(200, "application/json", json.dumps({"version": VERSION}).encode())
             elif path == "/api/update/check":
@@ -789,7 +872,7 @@ def main():
         print("\n  %d van %d .alog-bestanden in roasts.db gezet.\n" % (ok, len(files)))
         return
 
-    target = sim_loop if args.sim else (lambda: phidget_loop(args.bt_ch, args.et_ch, args.tc))
+    target = sim_loop if args.sim else (lambda: sensor_loop(args.bt_ch, args.et_ch, args.tc))
     threading.Thread(target=target, daemon=True).start()
 
     try:
