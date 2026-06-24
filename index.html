@@ -258,14 +258,14 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <main>
   <div class="rail">
-    <div class="read bt">
-      <div class="lab"><span class="swatch" style="background:var(--bt)"></span>Boontemperatuur · BT</div>
-      <div class="val"><span id="btVal">–</span><span class="unit" id="btUnit">°C</span></div>
-    </div>
-    <div class="divider"></div>
     <div class="read et">
       <div class="lab"><span class="swatch" style="background:var(--et)"></span>Luchttemperatuur · ET</div>
       <div class="val"><span id="etVal">–</span><span class="unit" id="etUnit">°C</span></div>
+    </div>
+    <div class="divider"></div>
+    <div class="read bt">
+      <div class="lab"><span class="swatch" style="background:var(--bt)"></span>Boontemperatuur · BT</div>
+      <div class="val"><span id="btVal">–</span><span class="unit" id="btUnit">°C</span></div>
     </div>
     <div class="read ror">
       <div class="lab"><span class="swatch" style="background:var(--ror)"></span>Stijgsnelheid · RoR <button class="qm" data-help="metingen" title="Uitleg">?</button></div>
@@ -406,6 +406,22 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
       <label class="switch"><input type="checkbox" id="setAlarm" checked><span class="sl"></span></label>
     </div>
     <button class="tool" id="btnTestSound" style="margin-top:16px">Test geluid</button>
+
+    <h2 style="margin-top:26px">Sensor &amp; ijken</h2>
+    <p class="sub">Dreamline leest je Phidget 1046 (PT100). Klopt de temperatuur niet precies met je roostermachine, dan zet je het hier in een paar tellen goed. Deze instelling blijft op de laptop bewaard, ook na een update.</p>
+    <div class="set">
+      <div class="stx"><b>BT en ET omgewisseld?</b><span>Staat de luchttemperatuur waar de boontemperatuur hoort (of andersom)? Eén tik zet ze om. Tip: tijdens opwarmen hoort ET (lucht) hoger te zijn dan BT (boon).</span></div>
+      <button class="tool" id="btnSwap">Wissel BT/ET</button>
+    </div>
+    <div class="set">
+      <div class="stx"><b>IJken op je machine</b><span>Lees op je roostermachine (of Artisan) de huidige BT en ET af, vul ze hier in en tik <i>IJk</i>. Dreamline rekent zichzelf dan precies gelijk. Doe dit het best bij een rustige, stabiele temperatuur.</span>
+        <div class="subset" style="gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+          <label style="font-size:12.5px;color:var(--muted)">ET (lucht) <input type="number" id="calEt" style="width:74px" inputmode="decimal"></label>
+          <label style="font-size:12.5px;color:var(--muted)">BT (boon) <input type="number" id="calBt" style="width:74px" inputmode="decimal"></label>
+          <button class="tool" id="btnCal">IJk</button>
+        </div>
+        <div style="font-size:11.5px;color:var(--muted);margin-top:8px" id="calHint">Nu live: –</div></div>
+    </div>
   </div>
 </div>
 
@@ -424,9 +440,21 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
   </div>
 </div>
 
+<div class="overlay" id="ovUpdPop" hidden>
+  <div class="sheet" style="max-width:380px;text-align:center">
+    <div style="font-size:46px;line-height:1">☕</div>
+    <h2 style="margin-top:8px">Er is een update</h2>
+    <p class="sub" id="updPopText">Een nieuwe versie van Dreamline staat klaar.</p>
+    <div class="updrow" style="justify-content:center">
+      <button class="tool" id="btnUpdPopNow">Nu installeren</button>
+      <button class="tool" id="btnUpdPopLater">Later</button>
+    </div>
+  </div>
+</div>
+
 <script>
 "use strict";
-const APP_VERSION = "1.6.4";
+const APP_VERSION = "1.6.5";
 const EV_LABEL = {CHARGE:"CHARGE", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -809,6 +837,11 @@ const Sound = (function(){
     tick(){ if(state.coach.sound) tone(640,0.07,"sine",0.32); },
     ping(){ if(state.coach.sound){ tone(880,0.16,"sine",0.5); tone(1245,0.20,"sine",0.5,0.12);} },
     alarm(){ if(state.coach.sound){ tone(430,0.16,"square",0.45); tone(360,0.26,"square",0.45,0.18);} },
+    coffee(){   // warm, knus deuntje als er een update is (klinkt altijd)
+      tone(392,0.7,"sine",0.22,0.0);
+      [[523,0.0],[659,0.12],[784,0.24],[1047,0.40]].forEach(([f,w])=>tone(f,0.55,"triangle",0.5,w));
+      tone(1568,0.5,"sine",0.18,0.52);
+    },
   };
 })();
 ["pointerdown","keydown","touchstart"].forEach(ev=>
@@ -906,7 +939,15 @@ async function updCheckSilent(){
   try{
     const r=await fetch("/api/update/check").then(x=>x.json());
     if(r && r.current){ const vl=$("#verLabel"); if(vl) vl.textContent="v"+r.current; }
-    if(r && r.update_available) $("#btnUpd").hidden=false;
+    if(r && r.update_available){
+      $("#btnUpd").hidden=false;
+      if(isLaptop() && !window._updPopShown){
+        window._updPopShown=true;
+        $("#updPopText").textContent="Versie v"+(r.latest||"?")+" staat klaar."+(r.notes? " "+String(r.notes).split("\n")[0] : "");
+        openOv("#ovUpdPop");
+        try{ Sound.coffee(); }catch(_){}
+      }
+    }
   }catch(_){}
 }
 function openUpd(){ openOv("#ovUpd"); doUpdCheck(); }
@@ -973,7 +1014,7 @@ $("#btnUpdApply").onclick=doUpdApply;
 $("#btnUpdRollback").onclick=doUpdRollback;
 if($("#lnkUpd")) $("#lnkUpd").onclick=openUpd;
 if($("#verReload")) $("#verReload").onclick=()=>location.reload();
-$("#btnSet").onclick=()=>openOv("#ovSet");
+$("#btnSet").onclick=()=>{ openOv("#ovSet"); refreshCal(); };
 $("#setSound").onchange=e=>{ state.coach.sound=e.target.checked; if(e.target.checked) Sound.ensure(); };
 $("#setMile").onchange=e=>state.coach.milestone=e.target.checked;
 $("#setEta").onchange=e=>state.coach.eta=e.target.checked;
@@ -983,6 +1024,39 @@ $("#setSens").addEventListener("click",e=>{ const b=e.target.closest("button"); 
   state.coach.sens=b.dataset.sens;
   $("#setSens").querySelectorAll("button").forEach(x=>x.classList.toggle("on",x===b)); });
 $("#btnTestSound").onclick=()=>{ Sound.ensure(); Sound.ping(); };
+
+/* ---------- update-popup ---------- */
+$("#btnUpdPopNow").onclick=()=>{ closeOv(); openUpd(); };
+$("#btnUpdPopLater").onclick=()=>closeOv();
+
+/* ---------- sensor: wisselen + ijken ---------- */
+async function refreshCal(){
+  try{
+    const s=await fetch("/api/setup").then(x=>x.json());
+    const f=v=>(v==null?"–":v.toFixed(1)+"°");
+    $("#calHint").textContent="Nu live — ET (lucht): "+f(s.et)+"   BT (boon): "+f(s.bt);
+  }catch(_){}
+}
+$("#btnSwap").onclick=async()=>{
+  try{
+    const r=await fetch("/api/swap",{method:"POST"}).then(x=>x.json());
+    if(r.ok){ $("#calHint").textContent="BT en ET omgewisseld ✓"; setTimeout(refreshCal,700); }
+  }catch(_){ $("#calHint").textContent="Niet gelukt (geen verbinding)."; }
+};
+$("#btnCal").onclick=async()=>{
+  let et=$("#calEt").value.trim(), bt=$("#calBt").value.trim();
+  if(et===""||bt===""){ $("#calHint").textContent="Vul beide temperaturen in (lucht én boon)."; return; }
+  et=+et; bt=+bt;
+  if(state.unit==="F"){ et=(et-32)*5/9; bt=(bt-32)*5/9; }   // server rekent in °C
+  $("#calHint").textContent="IJken…";
+  try{
+    const r=await fetch("/api/calibrate",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({et:et,bt:bt})}).then(x=>x.json());
+    if(r.ok){ $("#calEt").value=""; $("#calBt").value=""; $("#calHint").textContent="Geijkt ✓ — temperaturen staan nu gelijk."; setTimeout(refreshCal,900); }
+    else $("#calHint").textContent="Niet gelukt: "+(r.error||"probeer opnieuw als de chip live is.");
+  }catch(_){ $("#calHint").textContent="Niet gelukt (geen verbinding)."; }
+};
+setInterval(()=>{ if(!$("#ovSet").hidden) refreshCal(); }, 1500);
 document.querySelectorAll(".overlay").forEach(o=>o.addEventListener("click",e=>{
   if(e.target===o || (e.target.hasAttribute && e.target.hasAttribute("data-close"))) closeOv(); }));
 document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeOv(); });

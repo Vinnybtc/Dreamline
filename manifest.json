@@ -1,5 +1,5 @@
 {
-  "version": "1.6.4",
-  "notes": "Nieuw in 1.6.4:\n- Ondersteunt nu de Phidget 1046 (RTD/PT100 via bridge) - dit is jullie kastje. Leest de VoltageRatio en rekent om naar temperatuur, net als Artisan (PT100, voltage divider, gain 1).\n- Schakelt nog steeds vanzelf om zodra de chip wordt aangesloten.\n- Scanner [2] toont nu de 1046-kanalen met omgerekende temperatuur.",
+  "version": "1.6.5",
+  "notes": "Nieuw in 1.6.5:\n- Temperatuur klopt nu: juiste PT100-omrekening voor de 1046 (geijkt tegen Artisan).\n- Luchttemperatuur (ET) staat nu boven, boontemperatuur (BT) eronder.\n- Instellingen: 'Wissel BT/ET' en een 'IJk'-knop om Dreamline gelijk te zetten met je machine (blijft bewaard).\n- Melding met koffie-geluid zodra er een nieuwe update klaarstaat.",
   "files": ["index.html", "dreamline.py", "qr.py"]
 }

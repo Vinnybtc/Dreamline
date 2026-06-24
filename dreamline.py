@@ -30,7 +30,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.4"
+VERSION = "1.6.5"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
@@ -52,6 +52,8 @@ class State:
         self.subs = []             # SSE client-queues
         self.saved_id = None       # id van automatisch opgeslagen roast (na DROP)
         self.source_mode = "starting"   # chip | wachten | sim — wat de bron nu doet
+        self.raw0 = None                 # laatste ruwe VoltageRatio kanaal 0
+        self.raw1 = None                 # laatste ruwe VoltageRatio kanaal 1
 
     # ---- abonnees ----
     def subscribe(self):
@@ -468,10 +470,39 @@ def phidget_loop(bt_ch, et_ch, tc_type, period=0.5):
 # --------------------------------------------------------------------------
 # Deze waarden komen overeen met de Artisan-instelling: PT100, Div, gain 1.
 RTD_R0      = 100.0     # PT100 = 100 ohm bij 0 C (PT1000 = 1000)
-RTD_REF_OHM = 1000.0    # referentieweerstand van de voltage divider (Phidget 3175)
+RTD_REF_OHM = 1993.0    # referentieweerstand voltage divider (uit ijking tegen Artisan)
 RTD_GAIN    = 1.0       # bridge-gain (staat in Artisan op 1)
 _RTD_A = 3.9083e-3      # Callendar-Van Dusen A (PT100)
 _RTD_B = -5.775e-7      # Callendar-Van Dusen B (PT100)
+
+# Kalibratie die op de laptop bewaard blijft (overleeft updates):
+CAL_PATH = HERE / "dreamline_cal.json"
+CAL = {"swap": False, "rref0": RTD_REF_OHM, "rref1": RTD_REF_OHM}
+
+def load_cal():
+    try:
+        d = json.loads(CAL_PATH.read_text(encoding="utf-8"))
+        for k in ("swap", "rref0", "rref1"):
+            if k in d: CAL[k] = d[k]
+    except Exception:
+        pass
+
+def save_cal():
+    try:
+        CAL_PATH.write_text(json.dumps(CAL), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+def _rtd_res_at(t):
+    """PT100 weerstand (ohm) bij temperatuur t (C)."""
+    return RTD_R0 * (1.0 + _RTD_A * t + _RTD_B * t * t)
+
+def solve_rref(bv, t_true):
+    """Leid de referentieweerstand af uit een bekende temperatuur (1-punts ijking)."""
+    if bv is None or bv <= 0 or bv >= 1:
+        return None
+    return _rtd_res_at(t_true) * (1.0 - bv) / bv
 
 def _rtd_res_to_temp(r, r0=None):
     """Weerstand (ohm) -> temperatuur (C) via Callendar-Van Dusen (T >= 0)."""
@@ -499,11 +530,9 @@ def rtd_ratio_to_temp(bv, r_ref=None, r0=None, gain=None):
 
 def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     """Houdt de Phidget continu in de gaten en schakelt vanzelf om.
-    - Chip aangesloten -> live uitlezing.
-    - Chip nog niet / losgekoppeld -> 'wachten op chip' (geen nepdata).
-    Plug-and-play: aansluiten tijdens het draaien werkt, zonder herstart.
-    rtd=True  -> Phidget 1046 (RTD/PT100 via bridge, VoltageRatioInput)
-    rtd=False -> Phidget 1048/1051 (thermokoppel, TemperatureSensor)"""
+    RTD (1046): leest kanaal 0 en 1 als VoltageRatio en rekent om naar temperatuur
+    (PT100). Welk kanaal BT is en welk ET wordt door CAL['swap'] bepaald, en is in
+    de app om te wisselen + te ijken (blijft op de laptop bewaard)."""
     try:
         if rtd:
             from Phidget22.Devices.VoltageRatioInput import VoltageRatioInput as Channel
@@ -513,15 +542,16 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
         print("[dreamline] Phidget-bibliotheek niet gevonden (%s) - simulatie." % e)
         return sim_loop()
 
+    load_cal()
     soort = "RTD-bridge (1046, PT100)" if rtd else "thermokoppel (1048, type %s)" % tc_type
-    attached = {"bt": False, "et": False}
+    attached = {0: False, 1: False}
 
     def _both():
-        return attached["bt"] and attached["et"]
+        return attached[0] and attached[1]
 
-    def on_attach(which):
+    def on_attach(ch_no):
         def handler(ch):
-            attached[which] = True
+            attached[ch_no] = True
             if not rtd:
                 try: ch.setThermocoupleType(_tc(tc_type))
                 except Exception: pass
@@ -532,41 +562,54 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
                 print("[dreamline] chip verbonden - live uitlezing actief (%s)." % soort)
         return handler
 
-    def on_detach(which):
+    def on_detach(ch_no):
         def handler(ch):
-            attached[which] = False
+            attached[ch_no] = False
             STATE.set_source("wachten")
             print("[dreamline] chip losgekoppeld - wachten tot hij er weer in zit.")
         return handler
 
-    bt_s = Channel(); bt_s.setChannel(bt_ch)
-    et_s = Channel(); et_s.setChannel(et_ch)
-    bt_s.setOnAttachHandler(on_attach("bt")); bt_s.setOnDetachHandler(on_detach("bt"))
-    et_s.setOnAttachHandler(on_attach("et")); et_s.setOnDetachHandler(on_detach("et"))
+    sens = {}
+    for ch_no in (0, 1):
+        s = Channel(); s.setChannel(ch_no)
+        s.setOnAttachHandler(on_attach(ch_no)); s.setOnDetachHandler(on_detach(ch_no))
+        sens[ch_no] = s
 
     STATE.set_source("wachten")
     print("[dreamline] wachten op de chip (%s) - aansluiten gaat vanzelf, geen herstart nodig." % soort)
     try:
-        bt_s.open(); et_s.open()        # niet-blokkerend: koppelt vanzelf, ook later
+        for s in sens.values(): s.open()
     except Exception as e:
         print("[dreamline] kon de kanalen niet openen (%s) - simulatie." % e)
         return sim_loop()
 
-    def read(ch):
-        if rtd:
-            return rtd_ratio_to_temp(ch.getVoltageRatio())
-        return ch.getTemperature()
+    def raw(ch_no):
+        try:
+            return sens[ch_no].getVoltageRatio() if rtd else sens[ch_no].getTemperature()
+        except Exception:
+            return None
+
+    def conv(ch_no, r):
+        if r is None:
+            return None
+        if not rtd:
+            return r
+        return rtd_ratio_to_temp(r, CAL["rref0"] if ch_no == 0 else CAL["rref1"])
 
     warned = False; n = 0
     while True:
         if _both():
             try:
-                et = read(et_s); bt = read(bt_s)
-                if et is not None and bt is not None:
+                r0, r1 = raw(0), raw(1)
+                STATE.raw0, STATE.raw1 = r0, r1
+                t0, t1 = conv(0, r0), conv(1, r1)
+                if t0 is not None and t1 is not None:
+                    # standaard: BT = kanaal 0, ET = kanaal 1 ; 'swap' keert dit om
+                    bt, et = (t1, t0) if CAL["swap"] else (t0, t1)
                     STATE.add_reading(et, bt); n += 1
                     if not warned and n > 20 and (et > 90 or bt > 90) and et < bt - 5:
-                        print("[dreamline] LET OP: ET (%.0f) lager dan BT (%.0f) - kanalen mogelijk "
-                              "omgewisseld. Gebruik [2] scannen of wissel --bt-ch/--et-ch." % (et, bt))
+                        print("[dreamline] LET OP: ET (%.0f) lager dan BT (%.0f) - gebruik in de app "
+                              "'Wissel BT/ET'." % (et, bt))
                         warned = True
             except Exception:
                 pass
@@ -739,6 +782,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse()
             elif path == "/info":
                 self._send(200, "application/json", json.dumps({"url": self._url(), "feedback_url": _feedback_url() or ""}).encode())
+            elif path == "/api/setup":
+                self._send(200, "application/json", json.dumps({
+                    "swap": CAL["swap"], "rref0": CAL["rref0"], "rref1": CAL["rref1"],
+                    "raw0": STATE.raw0, "raw1": STATE.raw1,
+                    "bt": STATE.bt, "et": STATE.et, "source_mode": STATE.source_mode}).encode())
             elif path == "/api/version":
                 self._send(200, "application/json", json.dumps({"version": VERSION}).encode())
             elif path == "/api/update/check":
@@ -836,6 +884,31 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, "application/json", json.dumps({"ok": True, "id": rid}).encode())
                 except Exception as e:
                     self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
+            elif self.path == "/api/swap":
+                CAL["swap"] = not CAL["swap"]
+                save_cal()
+                self._send(200, "application/json", json.dumps({"ok": True, "swap": CAL["swap"]}).encode())
+            elif self.path == "/api/calibrate":
+                try:
+                    bt_true = float(data.get("bt")); et_true = float(data.get("et"))
+                except (TypeError, ValueError):
+                    return self._send(200, "application/json", b'{"ok":false,"error":"vul beide temperaturen in"}')
+                # welk fysiek kanaal is nu BT en welk ET?
+                bt_phys = 1 if CAL["swap"] else 0
+                et_phys = 0 if CAL["swap"] else 1
+                raws = {0: STATE.raw0, 1: STATE.raw1}
+                done = []
+                for phys, tt in ((bt_phys, bt_true), (et_phys, et_true)):
+                    rr = solve_rref(raws.get(phys), tt)
+                    if rr and 200 < rr < 20000:
+                        CAL["rref%d" % phys] = rr; done.append(phys)
+                if len(done) == 2:
+                    save_cal()
+                    self._send(200, "application/json", json.dumps(
+                        {"ok": True, "rref0": round(CAL["rref0"]), "rref1": round(CAL["rref1"])}).encode())
+                else:
+                    self._send(200, "application/json",
+                               b'{"ok":false,"error":"geen geldige meting - staat de chip live?"}')
             elif self.path == "/api/update/apply":
                 if not self._local():
                     return self._send(403, "application/json",
