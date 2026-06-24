@@ -1,5 +1,5 @@
 {
-  "version": "1.6.6",
-  "notes": "Nieuw in 1.6.6:\n- FIX: temperatuur bevroor soms (1046). Dreamline leest nu live mee via het meet-event en zet de bridge actief aan.\n- Tip: doe na deze update de ijking nog een keer (Instellingen - Sensor en ijken) zodat het exact klopt.",
+  "version": "1.6.8",
+  "notes": "Nieuw in 1.6.8:\n- Temperatuur leest nu continu live mee; je hoeft de USB NIET meer los te trekken.\n- Ingebouwde bewaker: valt de meting toch even stil, dan opent Dreamline het kanaal zelf opnieuw (automatische 'replug'). De temperatuur volgt nu ook netjes mee als een voeler afkoelt.\n- Knop 'Opmerking': een idee of probleem doorgeven; wordt veilig bewaard en (met ingestelde bestemming) naar jou doorgestuurd.",
   "files": ["index.html", "dreamline.py", "qr.py"]
 }

@@ -251,7 +251,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
     <button class="tool" id="btnSet">Coach</button>
     <button class="tool" id="btnPair" hidden>Koppel iPad</button>
     <button class="tool" id="btnUpd" hidden>Update<span class="dot-new"></span></button>
-    <button class="tool" id="btnFb" hidden>Feedback</button>
+    <button class="tool" id="btnFb" hidden>Opmerking</button>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">Verbinden…</span></div>
   </div>
 </header>
@@ -422,6 +422,14 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
         </div>
         <div style="font-size:11.5px;color:var(--muted);margin-top:8px" id="calHint">Nu live: –</div></div>
     </div>
+
+    <div id="fbDestWrap" hidden>
+      <h2 style="margin-top:26px">Opmerkingen → naar jou</h2>
+      <p class="sub">Alleen zichtbaar op de laptop. Plak hier jouw eigen, privé webhook-adres (zie de uitleg die je van de maker kreeg). Opmerkingen uit de app worden dan veilig naar dat adres gestuurd — alleen jij kunt ze lezen. Laat leeg om alleen lokaal te bewaren.</p>
+      <input id="fbDest" placeholder="https://script.google.com/macros/s/…/exec" style="width:100%;box-sizing:border-box;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
+      <div class="updrow" style="margin-top:10px"><button class="tool" id="btnFbDest">Opslaan</button></div>
+      <div class="hint" id="fbDestHint" style="margin-top:8px"></div>
+    </div>
   </div>
 </div>
 
@@ -440,6 +448,20 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
   </div>
 </div>
 
+<div class="overlay" id="ovFb" hidden>
+  <div class="sheet" style="max-width:460px">
+    <button class="x" data-close>×</button>
+    <h2>Opmerking of idee</h2>
+    <p class="sub">Iets dat beter kan, een wens of een bug? Schrijf het hier. Het komt veilig bij de maker terecht, die het op afstand kan aanpassen en als update terugstuurt.</p>
+    <textarea id="fbText" rows="5" placeholder="Bijv. 'Graag een grotere timer' of 'De temperatuur leek te laag bij het branden.'" style="width:100%;box-sizing:border-box;resize:vertical;font:inherit;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text)"></textarea>
+    <input id="fbName" placeholder="Je naam (optioneel)" style="width:100%;box-sizing:border-box;margin-top:8px;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
+    <div class="updrow" style="margin-top:12px">
+      <button class="tool" id="fbSend">Versturen</button>
+    </div>
+    <div class="hint" id="fbHint" style="margin-top:10px"></div>
+  </div>
+</div>
+
 <div class="overlay" id="ovUpdPop" hidden>
   <div class="sheet" style="max-width:380px;text-align:center">
     <div style="font-size:46px;line-height:1">☕</div>
@@ -454,7 +476,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.6.6";
+const APP_VERSION = "1.6.8";
 const EV_LABEL = {CHARGE:"CHARGE", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -986,16 +1008,28 @@ async function doUpdRollback(){
 }
 function checkServerVersion(v){ if(v && v!==APP_VERSION){ const c=$("#verChip"); if(c) c.hidden=false; } }
 
-/* ---------- feedback ---------- */
-(async function initFeedback(){
-  try{
-    const r = await fetch("/info").then(x=>x.json());
-    if(r && r.feedback_url){
-      const b = $("#btnFb");
-      if(b){ b.onclick = ()=>window.open(r.feedback_url, "_blank", "noopener"); b.hidden = false; }
-    }
-  }catch(_){}
+/* ---------- opmerkingen / ideeën ---------- */
+(function initFeedback(){
+  const b = $("#btnFb"); if(!b) return;
+  b.hidden = false;                      // altijd beschikbaar (server bewaart lokaal)
+  b.onclick = ()=>{ $("#fbText").value=""; $("#fbName").value=""; $("#fbHint").textContent=""; openOv("#ovFb"); };
 })();
+async function sendFeedback(){
+  const text = $("#fbText").value.trim();
+  if(!text){ $("#fbHint").textContent="Schrijf eerst even je opmerking of idee."; return; }
+  $("#fbHint").textContent="Versturen…"; $("#fbSend").disabled=true;
+  try{
+    const r = await fetch("/api/feedback",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text, name:$("#fbName").value.trim()})}).then(x=>x.json());
+    if(r && r.ok){
+      $("#fbHint").textContent = "Bedankt! Je opmerking is bewaard"+(r.forwarded?" en doorgestuurd ✓":" ✓");
+      setTimeout(closeOv, 1200);
+    } else {
+      $("#fbHint").textContent = "Kon niet opslaan, probeer het zo nog eens.";
+    }
+  }catch(_){ $("#fbHint").textContent="Geen verbinding met de laptop — probeer het zo nog eens."; }
+  $("#fbSend").disabled=false;
+}
 
 /* stap-2 knoppen */
 $("#btnHelp").onclick=()=>openHelp();
@@ -1028,6 +1062,7 @@ $("#btnTestSound").onclick=()=>{ Sound.ensure(); Sound.ping(); };
 /* ---------- update-popup ---------- */
 $("#btnUpdPopNow").onclick=()=>{ closeOv(); openUpd(); };
 $("#btnUpdPopLater").onclick=()=>closeOv();
+$("#fbSend").onclick=sendFeedback;
 
 /* ---------- sensor: wisselen + ijken ---------- */
 async function refreshCal(){
@@ -1035,8 +1070,22 @@ async function refreshCal(){
     const s=await fetch("/api/setup").then(x=>x.json());
     const f=v=>(v==null?"–":v.toFixed(1)+"°");
     $("#calHint").textContent="Nu live — ET (lucht): "+f(s.et)+"   BT (boon): "+f(s.bt);
+    const wrap=$("#fbDestWrap");
+    if(wrap){
+      if(s.is_laptop){ wrap.hidden=false; if(document.activeElement!==$("#fbDest")) $("#fbDest").value=s.feedback_url||""; }
+      else wrap.hidden=true;
+    }
   }catch(_){}
 }
+$("#btnFbDest").onclick=async()=>{
+  const url=$("#fbDest").value.trim();
+  $("#fbDestHint").textContent="Opslaan…";
+  try{
+    const r=await fetch("/api/fbdest",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({url})}).then(x=>x.json());
+    $("#fbDestHint").textContent = r.ok ? (url? "Opgeslagen ✓ — opmerkingen gaan nu naar jou." : "Leeg opgeslagen — alleen lokaal bewaren.") : ("Niet gelukt: "+(r.error||""));
+  }catch(_){ $("#fbDestHint").textContent="Niet gelukt (geen verbinding)."; }
+};
 $("#btnSwap").onclick=async()=>{
   try{
     const r=await fetch("/api/swap",{method:"POST"}).then(x=>x.json());

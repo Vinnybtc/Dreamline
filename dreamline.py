@@ -30,7 +30,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.6"
+VERSION = "1.6.8"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
@@ -546,6 +546,8 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     soort = "RTD-bridge (1046, PT100)" if rtd else "thermokoppel (1048, type %s)" % tc_type
     attached = {0: False, 1: False}
     latest = {0: None, 1: None}     # laatste ruwe waarde via change-event (1046 vereist dit)
+    last_data = {"t": 0.0}          # tijdstip van de laatste binnengekomen meting (voor de bewaker)
+    reopening = {"v": False}        # True tijdens automatisch heropenen (onderdrukt 'wachten'-melding)
 
     def _both():
         return attached[0] and attached[1]
@@ -553,6 +555,7 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     def on_change(ch_no):
         def handler(ch, value):
             latest[ch_no] = value
+            last_data["t"] = time.monotonic()
         return handler
 
     def on_attach(ch_no):
@@ -569,6 +572,7 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
                 except Exception: pass
             try: ch.setDataInterval(max(ch.getMinDataInterval(), 250))
             except Exception: pass
+            last_data["t"] = time.monotonic()   # stale-klok start zodra de chip er is
             if _both():
                 STATE.set_source("chip")
                 print("[dreamline] chip verbonden - live uitlezing actief (%s)." % soort)
@@ -577,8 +581,9 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     def on_detach(ch_no):
         def handler(ch):
             attached[ch_no] = False
-            STATE.set_source("wachten")
-            print("[dreamline] chip losgekoppeld - wachten tot hij er weer in zit.")
+            if not reopening["v"]:
+                STATE.set_source("wachten")
+                print("[dreamline] chip losgekoppeld - wachten tot hij er weer in zit.")
         return handler
 
     sens = {}
@@ -618,6 +623,19 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
         return rtd_ratio_to_temp(r, CAL["rref0"] if ch_no == 0 else CAL["rref1"])
 
     warned = False; n = 0
+    STALE = 4.0          # seconden zonder nieuwe meting voordat we automatisch heropenen
+    last_reopen = 0.0
+    def _reopen():
+        reopening["v"] = True
+        for s in sens.values():
+            try: s.close()
+            except Exception: pass
+        time.sleep(0.4)
+        for s in sens.values():
+            try: s.open()
+            except Exception: pass
+        last_data["t"] = time.monotonic()
+        reopening["v"] = False
     while True:
         if _both():
             try:
@@ -634,6 +652,14 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
                         warned = True
             except Exception:
                 pass
+            # bewaker: staat de meting stil? dan zelf het kanaal heropenen
+            # (vervangt het handmatig lostrekken van de USB).
+            now = time.monotonic()
+            if last_data["t"] and (now - last_data["t"]) > STALE and (now - last_reopen) > STALE:
+                last_reopen = now
+                print("[dreamline] meting stond stil - kanaal wordt automatisch heropend "
+                      "(geen USB lostrekken nodig).")
+                _reopen()
         time.sleep(period)
 
 
@@ -664,6 +690,38 @@ def _feedback_url():
     except Exception:
         pass
     return None
+
+FEEDBACK_PATH = HERE / "feedback.json"
+
+def save_feedback(rec):
+    """Bewaar een opmerking lokaal (veilig; gaat nooit verloren)."""
+    try:
+        data = []
+        if FEEDBACK_PATH.exists():
+            try: data = json.loads(FEEDBACK_PATH.read_text(encoding="utf-8")) or []
+            except Exception: data = []
+        data.append(rec)
+        FEEDBACK_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+def forward_feedback(rec):
+    """Stuur de opmerking door naar de (eigen) webhook in feedback_url, indien ingesteld.
+    Alleen https (of localhost). Mislukken is ok: de lokale kopie blijft bewaard."""
+    u = _feedback_url()
+    if not u or not (u.startswith("https://") or u.startswith("http://localhost")):
+        return False
+    try:
+        body = json.dumps(rec, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(u, data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "User-Agent": "Dreamline/%s" % VERSION})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read(2048)
+        return True
+    except Exception:
+        return False
 
 def _url_allowed(u):
     """Alleen https, of http naar localhost (voor testen/offline LAN-mirror)."""
@@ -807,9 +865,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", json.dumps({
                     "swap": CAL["swap"], "rref0": CAL["rref0"], "rref1": CAL["rref1"],
                     "raw0": STATE.raw0, "raw1": STATE.raw1,
-                    "bt": STATE.bt, "et": STATE.et, "source_mode": STATE.source_mode}).encode())
+                    "bt": STATE.bt, "et": STATE.et, "source_mode": STATE.source_mode,
+                    "feedback_url": _feedback_url() or "", "is_laptop": self._local()}).encode())
             elif path == "/api/version":
                 self._send(200, "application/json", json.dumps({"version": VERSION}).encode())
+            elif path == "/api/feedback":
+                if not self._local():
+                    return self._send(403, "application/json", b"[]")
+                try:
+                    fb = json.loads(FEEDBACK_PATH.read_text(encoding="utf-8")) if FEEDBACK_PATH.exists() else []
+                except Exception:
+                    fb = []
+                self._send(200, "application/json", json.dumps(fb, ensure_ascii=False).encode())
             elif path == "/api/update/check":
                 self._send(200, "application/json", json.dumps(check_update()).encode())
             elif path == "/qr.svg":
@@ -905,6 +972,32 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, "application/json", json.dumps({"ok": True, "id": rid}).encode())
                 except Exception as e:
                     self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
+            elif self.path == "/api/fbdest":
+                if not self._local():
+                    return self._send(403, "application/json", b'{"ok":false,"error":"alleen op de laptop"}')
+                url = str(data.get("url", "")).strip()
+                if url and not (url.startswith("https://") or url.startswith("http://localhost")):
+                    return self._send(200, "application/json", b'{"ok":false,"error":"gebruik een https-adres"}')
+                try:
+                    cfg = {}
+                    if CONFIG_PATH.exists():
+                        cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) or {}
+                    cfg["feedback_url"] = url
+                    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+                    self._send(200, "application/json", json.dumps({"ok": True, "url": url}).encode())
+                except Exception as e:
+                    self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
+            elif self.path == "/api/feedback":
+                text = str(data.get("text", "")).strip()
+                if not text:
+                    return self._send(200, "application/json", b'{"ok":false,"error":"leeg"}')
+                rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                       "version": VERSION,
+                       "name": str(data.get("name", ""))[:80],
+                       "text": text[:4000]}
+                save_feedback(rec)
+                fwd = forward_feedback(rec)
+                self._send(200, "application/json", json.dumps({"ok": True, "forwarded": fwd}).encode())
             elif self.path == "/api/swap":
                 CAL["swap"] = not CAL["swap"]
                 save_cal()
