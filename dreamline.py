@@ -30,7 +30,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.3"
+VERSION = "1.6.4"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
@@ -328,10 +328,13 @@ def _tc(tc_type):
             ThermocoupleType.THERMOCOUPLE_TYPE_K)
 
 
-def phidget_scan(tc_type, seconds=25):
+def phidget_scan(tc_type, seconds=25, rtd=True):
     """Live monitor van alle kanalen, zo herken je welke voeler ET en welke BT is."""
     try:
-        from Phidget22.Devices.TemperatureSensor import TemperatureSensor
+        if rtd:
+            from Phidget22.Devices.VoltageRatioInput import VoltageRatioInput as Channel
+        else:
+            from Phidget22.Devices.TemperatureSensor import TemperatureSensor as Channel
     except Exception as e:
         print("[dreamline] Phidget-bibliotheek niet gevonden (%s)." % e)
         print("            Installeer met:  pip install Phidget22")
@@ -339,20 +342,24 @@ def phidget_scan(tc_type, seconds=25):
     sensors = []   # [ch, sensor, start_temp, last_temp]
     for ch in range(4):
         try:
-            s = TemperatureSensor(); s.setChannel(ch); s.openWaitForAttachment(3000)
-            try: s.setThermocoupleType(_tc(tc_type))
-            except Exception: pass
+            s = Channel(); s.setChannel(ch); s.openWaitForAttachment(3000)
+            if not rtd:
+                try: s.setThermocoupleType(_tc(tc_type))
+                except Exception: pass
             try: s.setDataInterval(max(s.getMinDataInterval(), 200))
             except Exception: pass
             sensors.append([ch, s, None, None])
         except Exception:
             pass
     if not sensors:
-        print("[dreamline] Geen kanalen geopend. Staat de chip aan? Sluit eventueel Artisan en probeer opnieuw.")
+        soort = "RTD-bridge (1046)" if rtd else "thermokoppel (1048)"
+        print("[dreamline] Geen %s-kanalen geopend. Staat de chip aan? Sluit eventueel Artisan en probeer opnieuw." % soort)
+        if rtd:
+            print("            (Is het tóch een thermokoppel-kastje? Probeer dan: Start Dreamline + thermokoppel-modus.)")
         return
 
     found = ", ".join("kanaal %d" % x[0] for x in sensors)
-    print("\n  Gevonden: %s" % found)
+    print("\n  Gevonden (%s): %s" % ("RTD/1046" if rtd else "TC/1048", found))
     print("  " + "-" * 56)
     print("  TIP: warm NU een voeler op (vasthouden of warme lucht erbij).")
     print("       Het kanaal dat STIJGT is precies die voeler.")
@@ -362,8 +369,8 @@ def phidget_scan(tc_type, seconds=25):
 
     def read(s):
         try:
-            v = s.getTemperature()
-            return v if -50 < v < 1300 else None
+            v = rtd_ratio_to_temp(s.getVoltageRatio()) if rtd else s.getTemperature()
+            return v if (v is not None and -50 < v < 1300) else None
         except Exception:
             return None
 
@@ -456,17 +463,57 @@ def phidget_loop(bt_ch, et_ch, tc_type, period=0.5):
         time.sleep(period)
 
 
-def sensor_loop(bt_ch, et_ch, tc_type, period=0.5):
+# --------------------------------------------------------------------------
+# RTD-omrekening (Phidget 1046 + 3175 voltage divider, PT100)
+# --------------------------------------------------------------------------
+# Deze waarden komen overeen met de Artisan-instelling: PT100, Div, gain 1.
+RTD_R0      = 100.0     # PT100 = 100 ohm bij 0 C (PT1000 = 1000)
+RTD_REF_OHM = 1000.0    # referentieweerstand van de voltage divider (Phidget 3175)
+RTD_GAIN    = 1.0       # bridge-gain (staat in Artisan op 1)
+_RTD_A = 3.9083e-3      # Callendar-Van Dusen A (PT100)
+_RTD_B = -5.775e-7      # Callendar-Van Dusen B (PT100)
+
+def _rtd_res_to_temp(r, r0=None):
+    """Weerstand (ohm) -> temperatuur (C) via Callendar-Van Dusen (T >= 0)."""
+    r0 = r0 or RTD_R0
+    if r is None or r <= 0:
+        return None
+    disc = _RTD_A * _RTD_A - 4.0 * _RTD_B * (1.0 - r / r0)
+    if disc < 0:
+        return None
+    return (-_RTD_A + math.sqrt(disc)) / (2.0 * _RTD_B)
+
+def rtd_ratio_to_temp(bv, r_ref=None, r0=None, gain=None):
+    """VoltageRatio (V/V) van de 1046 -> temperatuur (C), voltage-divider-wiring."""
+    if bv is None:
+        return None
+    r_ref = r_ref or RTD_REF_OHM
+    gain = gain or RTD_GAIN
+    bv = bv / gain
+    d = 1.0 - bv
+    if d <= 0:
+        return None
+    r = r_ref * bv / d          # voltage divider: bv = R/(R+Rref)  ->  R = Rref*bv/(1-bv)
+    return _rtd_res_to_temp(r, r0)
+
+
+def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     """Houdt de Phidget continu in de gaten en schakelt vanzelf om.
     - Chip aangesloten -> live uitlezing.
     - Chip nog niet / losgekoppeld -> 'wachten op chip' (geen nepdata).
-    Plug-and-play: aansluiten tijdens het draaien werkt, zonder herstart."""
+    Plug-and-play: aansluiten tijdens het draaien werkt, zonder herstart.
+    rtd=True  -> Phidget 1046 (RTD/PT100 via bridge, VoltageRatioInput)
+    rtd=False -> Phidget 1048/1051 (thermokoppel, TemperatureSensor)"""
     try:
-        from Phidget22.Devices.TemperatureSensor import TemperatureSensor
+        if rtd:
+            from Phidget22.Devices.VoltageRatioInput import VoltageRatioInput as Channel
+        else:
+            from Phidget22.Devices.TemperatureSensor import TemperatureSensor as Channel
     except Exception as e:
         print("[dreamline] Phidget-bibliotheek niet gevonden (%s) - simulatie." % e)
         return sim_loop()
 
+    soort = "RTD-bridge (1046, PT100)" if rtd else "thermokoppel (1048, type %s)" % tc_type
     attached = {"bt": False, "et": False}
 
     def _both():
@@ -475,13 +522,14 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5):
     def on_attach(which):
         def handler(ch):
             attached[which] = True
-            try: ch.setThermocoupleType(_tc(tc_type))
-            except Exception: pass
+            if not rtd:
+                try: ch.setThermocoupleType(_tc(tc_type))
+                except Exception: pass
             try: ch.setDataInterval(max(ch.getMinDataInterval(), 250))
             except Exception: pass
             if _both():
                 STATE.set_source("chip")
-                print("[dreamline] chip verbonden - live uitlezing actief.")
+                print("[dreamline] chip verbonden - live uitlezing actief (%s)." % soort)
         return handler
 
     def on_detach(which):
@@ -491,29 +539,35 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5):
             print("[dreamline] chip losgekoppeld - wachten tot hij er weer in zit.")
         return handler
 
-    bt_s = TemperatureSensor(); bt_s.setChannel(bt_ch)
-    et_s = TemperatureSensor(); et_s.setChannel(et_ch)
+    bt_s = Channel(); bt_s.setChannel(bt_ch)
+    et_s = Channel(); et_s.setChannel(et_ch)
     bt_s.setOnAttachHandler(on_attach("bt")); bt_s.setOnDetachHandler(on_detach("bt"))
     et_s.setOnAttachHandler(on_attach("et")); et_s.setOnDetachHandler(on_detach("et"))
 
     STATE.set_source("wachten")
-    print("[dreamline] wachten op de chip - sluit de Phidget aan, omschakelen gaat vanzelf.")
+    print("[dreamline] wachten op de chip (%s) - aansluiten gaat vanzelf, geen herstart nodig." % soort)
     try:
         bt_s.open(); et_s.open()        # niet-blokkerend: koppelt vanzelf, ook later
     except Exception as e:
         print("[dreamline] kon de kanalen niet openen (%s) - simulatie." % e)
         return sim_loop()
 
+    def read(ch):
+        if rtd:
+            return rtd_ratio_to_temp(ch.getVoltageRatio())
+        return ch.getTemperature()
+
     warned = False; n = 0
     while True:
         if _both():
             try:
-                et = et_s.getTemperature(); bt = bt_s.getTemperature()
-                STATE.add_reading(et, bt); n += 1
-                if not warned and n > 20 and (et > 90 or bt > 90) and et < bt - 5:
-                    print("[dreamline] LET OP: ET (%.0f) lager dan BT (%.0f) - kanalen mogelijk "
-                          "omgewisseld. Gebruik [2] scannen of wissel --bt-ch/--et-ch." % (et, bt))
-                    warned = True
+                et = read(et_s); bt = read(bt_s)
+                if et is not None and bt is not None:
+                    STATE.add_reading(et, bt); n += 1
+                    if not warned and n > 20 and (et > 90 or bt > 90) and et < bt - 5:
+                        print("[dreamline] LET OP: ET (%.0f) lager dan BT (%.0f) - kanalen mogelijk "
+                              "omgewisseld. Gebruik [2] scannen of wissel --bt-ch/--et-ch." % (et, bt))
+                        warned = True
             except Exception:
                 pass
         time.sleep(period)
@@ -823,6 +877,8 @@ def main():
     ap.add_argument("--bt-ch", type=int, default=1, help="Phidget-kanaal voor boontemperatuur")
     ap.add_argument("--et-ch", type=int, default=0, help="Phidget-kanaal voor luchttemperatuur")
     ap.add_argument("--tc", default="K", help="type thermokoppel (J/K/E/T)")
+    ap.add_argument("--thermocouple", action="store_true",
+                    help="gebruik thermokoppel-ingang (1048) i.p.v. RTD-bridge (1046)")
     ap.add_argument("--scan", action="store_true", help="toon alle 4 kanalen om ET/BT te vinden")
     ap.add_argument("--import", dest="import_path", metavar="PAD",
                     help="importeer Artisan .alog (bestand of map) en stop")
@@ -848,7 +904,7 @@ def main():
         return
 
     if args.scan:
-        return phidget_scan(args.tc)
+        return phidget_scan(args.tc, rtd=not args.thermocouple)
 
     db_init()
 
@@ -872,7 +928,7 @@ def main():
         print("\n  %d van %d .alog-bestanden in roasts.db gezet.\n" % (ok, len(files)))
         return
 
-    target = sim_loop if args.sim else (lambda: sensor_loop(args.bt_ch, args.et_ch, args.tc))
+    target = sim_loop if args.sim else (lambda: sensor_loop(args.bt_ch, args.et_ch, args.tc, rtd=not args.thermocouple))
     threading.Thread(target=target, daemon=True).start()
 
     try:
