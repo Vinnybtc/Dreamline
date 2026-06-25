@@ -32,6 +32,11 @@ except Exception:
 # --- versie & veilig updaten op afstand ------------------------------------
 VERSION = "1.7.0"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
+# Standaard-bestemming voor opmerkingen + update-meldingen. Publiek relay-endpoint
+# (geen secret): de winkel-pc stuurt hier automatisch naartoe, zonder dat iemand iets
+# hoeft in te stellen. Het relay e-mailt het door naar de maker. Een eigen 'feedback_url'
+# in update_config.json heeft voorrang.
+DEFAULT_FEEDBACK_URL = "https://lfxjbmxzcszqbqjagopu.supabase.co/functions/v1/dreamline-feedback"
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
 MAX_BODY = 8 * 1024 * 1024                  # max grootte van een POST (DoS-bescherming)
@@ -753,7 +758,7 @@ def _feedback_url():
             if u: return str(u).strip()
     except Exception:
         pass
-    return None
+    return DEFAULT_FEEDBACK_URL or None
 
 FEEDBACK_PATH = HERE / "feedback.json"
 
