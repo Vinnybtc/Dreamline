@@ -1,0 +1,31 @@
+name: CI
+
+# Draait bij elke push naar main en op pull requests. Vangt precies de fouten
+# die anders pas op een winkel-laptop zouden opvallen: een niet-compilerende
+# dreamline.py, een ontbrekende functie (zoals de _url_allowed-regressie), of
+# versies die uiteenlopen tussen dreamline.py / index.html / manifest.json.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile the shipped Python
+        run: python -m py_compile dreamline.py qr.py
+
+      - name: Install test deps
+        run: pip install pytest
+
+      - name: Run tests (logic + version consistency)
+        run: pytest -q
