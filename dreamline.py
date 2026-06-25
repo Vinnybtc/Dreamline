@@ -30,12 +30,21 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.10"
+VERSION = "1.7.0"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
 MAX_BODY = 8 * 1024 * 1024                  # max grootte van een POST (DoS-bescherming)
 MAX_FILE = 6 * 1024 * 1024                  # max grootte van een te downloaden bestand
+
+# --- Artisan-achtige slimmigheden -----------------------------------------
+ROR_SPAN = 14.0        # seconden: venster waarover RoR wordt berekend (delta-span, polyfit)
+ROR_CLAMP = (-90.0, 130.0)   # RoR begrenzen op zinnige waarden (°/min)
+SPIKE_MAX = 25.0       # °C: grotere sprong tussen 2 metingen = spike -> mediaan-filter vangt 'm
+TP_RISE = 3.0          # °C boven het minimum voordat we het keerpunt (TP) vaststellen
+
+PAIRED_PATH = HERE / "paired.json"     # onthoudt of er ooit een iPad is gekoppeld
+UPDATE_LOG = HERE / "update_log.json"  # logboek van geïnstalleerde updates (voor jou)
 
 # --------------------------------------------------------------------------
 # Gedeelde roast-toestand
@@ -54,6 +63,12 @@ class State:
         self.source_mode = "starting"   # chip | wachten | sim — wat de bron nu doet
         self.raw0 = None                 # laatste ruwe VoltageRatio kanaal 0
         self.raw1 = None                 # laatste ruwe VoltageRatio kanaal 1
+        self._bt3 = []                   # laatste 3 ruwe BT-metingen (mediaanfilter tegen spikes)
+        self._et3 = []                   # idem voor ET
+        self._tp_min = None              # laagste BT na CHARGE (voor keerpunt-detectie)
+        self._tp_min_t = None
+        self._tp_first = None            # eerste BT na CHARGE (om een echte dip te herkennen)
+        self.remote = 0                  # aantal verbonden iPads/telefoons (niet-localhost)
 
     # ---- abonnees ----
     def subscribe(self):
@@ -92,20 +107,32 @@ class State:
                     "events": dict(self.events)}
 
     # ---- metingen ----
-    def add_reading(self, et_c, bt_c):
+    @staticmethod
+    def _med3(buf, v):
+        buf.append(v)
+        if len(buf) > 3:
+            buf.pop(0)
+        return sorted(buf)[len(buf) // 2]
+
+    def add_reading(self, et_c, bt_c, t_override=None):
         now = time.monotonic()
         with self.lock:
+            # spike-onderdrukking (Artisan 'smooth spikes'): mediaan van de laatste 3 metingen.
+            # Een losse uitschieter (ruis/contactstoring) verdwijnt; echte bewegingen blijven.
+            et_c = self._med3(self._et3, et_c)
+            bt_c = self._med3(self._bt3, bt_c)
             self.et, self.bt = et_c, bt_c
             if self.charge is None:
                 # voor CHARGE: alleen de uitlezing tonen, nog niet plotten
                 self.broadcast_live(et_c, bt_c, None)
                 return
-            t = now - self.charge
-            ror = self._ror(bt_c, t)
-            self.ror = ror
+            t = t_override if t_override is not None else (now - self.charge)
             last = self.samples[-1] if self.samples else None
             if not last or t - last["t"] >= 0.5:
                 self.samples.append({"t": round(t, 1), "et": round(et_c, 1), "bt": round(bt_c, 1)})
+            ror = self._ror(bt_c, t)
+            self.ror = ror
+            self._detect_tp(bt_c, t)
             self.broadcast_live(et_c, bt_c, ror, t)
 
     def broadcast_live(self, et_c, bt_c, ror, t=None):
@@ -114,16 +141,37 @@ class State:
                         "ror": round(ror, 2) if ror is not None else None})
 
     def _ror(self, bt_now, t_now):
-        # graden/min over ~30 s venster
-        ref = None
-        for s in reversed(self.samples):
-            if t_now - s["t"] >= 25:
-                ref = s; break
-        if not ref:
-            ref = self.samples[0] if self.samples else None
-        if not ref or t_now - ref["t"] <= 0:
+        # RoR (°/min) als kleinste-kwadraten helling over een venster van ROR_SPAN seconden
+        # (Artisan 'Polyfit'): veel rustiger dan punt-op-punt, met minimale vertraging.
+        pts = [(s["t"], s["bt"]) for s in self.samples if 0 <= t_now - s["t"] <= ROR_SPAN]
+        if not pts or pts[-1][0] < t_now - 0.05:
+            pts.append((t_now, bt_now))
+        n = len(pts)
+        if n < 3:
             return None
-        return (bt_now - ref["bt"]) / ((t_now - ref["t"]) / 60.0)
+        sx = sum(p[0] for p in pts); sy = sum(p[1] for p in pts)
+        sxx = sum(p[0] * p[0] for p in pts); sxy = sum(p[0] * p[1] for p in pts)
+        denom = n * sxx - sx * sx
+        if denom <= 1e-9:
+            return None
+        slope = (n * sxy - sx * sy) / denom        # °C per seconde
+        ror = slope * 60.0
+        lo, hi = ROR_CLAMP
+        return max(lo, min(hi, ror))
+
+    def _detect_tp(self, bt_now, t_now):
+        # Keerpunt (Turning Point): laagste BT na CHARGE, maar alleen als BT eerst
+        # echt is gedaald (koude bonen) en daarna weer voldoende stijgt.
+        if "TP" in self.events or "DROP" in self.events:
+            return
+        if self._tp_first is None:
+            self._tp_first = bt_now
+        if self._tp_min is None or bt_now < self._tp_min:
+            self._tp_min, self._tp_min_t = bt_now, t_now
+        dipped = self._tp_first is not None and self._tp_min <= self._tp_first - TP_RISE
+        if dipped and t_now > 20 and bt_now >= self._tp_min + TP_RISE:
+            self.events["TP"] = round(self._tp_min_t, 1)
+            self.broadcast({"k": "event", "type": "TP", "t": round(self._tp_min_t, 1)})
 
     # ---- events ----
     def event(self, etype):
@@ -133,6 +181,8 @@ class State:
                 self.samples, self.events, self.charge = [], {}, None
                 self.bt = self.et = self.ror = None
                 self.saved_id = None
+                self._bt3 = []; self._et3 = []
+                self._tp_min = None; self._tp_min_t = None; self._tp_first = None
             self.broadcast({"k": "reset"})
             return
         now = time.monotonic()
@@ -142,6 +192,7 @@ class State:
                 self.samples = []
                 self.events = {"CHARGE": 0}
                 self.saved_id = None
+                self._tp_min = None; self._tp_min_t = None; self._tp_first = None
             self.broadcast({"k": "reset"})
             self.broadcast({"k": "event", "type": "CHARGE", "t": 0})
             return
@@ -314,7 +365,7 @@ def sim_loop():
             bt = 92 + (208 - 92) * (1 - (1 - x) ** 1.7)
         bt += math.sin(t / 24) * 0.4
         et = bt + 38 + 26 * math.exp(-t / 180)
-        STATE.add_reading(et, bt)
+        STATE.add_reading(et, bt, t)
         if t >= 300 and "DRY" not in STATE.events: STATE.event("DRY")
         if t >= 540 and "FCS" not in STATE.events: STATE.event("FCS")
         if t >= 660 and "DROP" not in STATE.events: STATE.event("DROP")
@@ -736,6 +787,44 @@ def forward_feedback(rec):
     except Exception:
         return False
 
+def log_and_notify_update(to_ver):
+    """Bij een geslaagde update: lokaal loggen én actief een seintje naar Vincent sturen
+    (via dezelfde veilige webhook als de opmerkingen). Mislukken mag, het logboek blijft."""
+    host = socket.gethostname()
+    rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+           "type": "update", "from": VERSION, "to": to_ver, "host": host,
+           "version": to_ver, "name": "UPDATE · %s" % host,
+           "text": "Dreamline is op '%s' bijgewerkt naar v%s." % (host, to_ver)}
+    try:
+        data = []
+        if UPDATE_LOG.exists():
+            try: data = json.loads(UPDATE_LOG.read_text(encoding="utf-8")) or []
+            except Exception: data = []
+        data.append(rec)
+        UPDATE_LOG.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        forward_feedback(rec)     # zelfde privé-webhook -> komt in jouw Google Sheet
+    except Exception:
+        pass
+
+def _ever_paired():
+    try:
+        return bool(PAIRED_PATH.exists() and (json.loads(PAIRED_PATH.read_text(encoding="utf-8")) or {}).get("paired"))
+    except Exception:
+        return False
+
+def _mark_paired():
+    try:
+        if not _ever_paired():
+            PAIRED_PATH.write_text(json.dumps(
+                {"paired": True, "since": datetime.datetime.now().isoformat(timespec="seconds")}),
+                encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _url_allowed(u):
     """Alleen https, of http naar localhost (voor testen/offline LAN-mirror)."""
     try:
@@ -823,6 +912,12 @@ def apply_update():
             (HERE / f).write_bytes(data)
     except Exception as e:
         return {"ok": False, "error": "schrijven mislukt: %s" % e}
+    try:                                              # 4) markeer dat er net is bijgewerkt (voor het controle-scherm)
+        (HERE / "just_updated.json").write_text(
+            json.dumps({"to": latest, "from": VERSION}), encoding="utf-8")
+    except Exception:
+        pass
+    log_and_notify_update(latest)                     # 5) logboek + actief seintje naar jou
     return {"ok": True, "from": VERSION, "to": latest, "files": list(blobs.keys())}
 
 def rollback_update():
@@ -879,7 +974,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/events":
                 self._sse()
             elif path == "/info":
-                self._send(200, "application/json", json.dumps({"url": self._url(), "feedback_url": _feedback_url() or ""}).encode())
+                self._send(200, "application/json", json.dumps({
+                    "url": self._url(), "feedback_url": _feedback_url() or "",
+                    "is_laptop": self._local(),
+                    "ever_paired": _ever_paired(),
+                    "remote_connected": STATE.remote > 0}).encode())
             elif path == "/api/setup":
                 self._send(200, "application/json", json.dumps({
                     "swap": CAL["swap"], "rref0": CAL["rref0"], "rref1": CAL["rref1"],
@@ -888,6 +987,16 @@ class Handler(BaseHTTPRequestHandler):
                     "feedback_url": _feedback_url() or "", "is_laptop": self._local()}).encode())
             elif path == "/api/version":
                 self._send(200, "application/json", json.dumps({"version": VERSION}).encode())
+            elif path == "/api/justupdated":
+                info = {"updated": False}
+                try:
+                    p = HERE / "just_updated.json"
+                    if p.exists():
+                        d = json.loads(p.read_text(encoding="utf-8")) or {}
+                        info = {"updated": True, "to": d.get("to", VERSION), "from": d.get("from", "")}
+                except Exception:
+                    pass
+                self._send(200, "application/json", json.dumps(info).encode())
             elif path == "/api/feedback":
                 if not self._local():
                     return self._send(403, "application/json", b"[]")
@@ -934,6 +1043,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         q = STATE.subscribe()
+        # is dit een iPad/telefoon (niet de laptop zelf)? dan telt het als 'gekoppeld'
+        try:
+            host = self.client_address[0]
+        except Exception:
+            host = ""
+        is_remote = host not in ("127.0.0.1", "::1", "localhost", "")
+        if is_remote:
+            with STATE.lock:
+                STATE.remote += 1
+            _mark_paired()
         try:
             self.wfile.write(b"retry: 2000\n\n")
             self.wfile.write(("data: " + json.dumps(STATE.snapshot()) + "\n\n").encode())
@@ -949,6 +1068,9 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             STATE.unsubscribe(q)
+            if is_remote:
+                with STATE.lock:
+                    STATE.remote = max(0, STATE.remote - 1)
 
     def do_POST(self):
         try:
@@ -1006,6 +1128,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, "application/json", json.dumps({"ok": True, "url": url}).encode())
                 except Exception as e:
                     self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
+            elif self.path == "/api/justupdated/clear":
+                try:
+                    p = HERE / "just_updated.json"
+                    if p.exists(): p.unlink()
+                except Exception:
+                    pass
+                self._send(200, "application/json", b'{"ok":true}')
             elif self.path == "/api/feedback":
                 text = str(data.get("text", "")).strip()
                 if not text:
@@ -1043,16 +1172,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, "application/json",
                                b'{"ok":false,"error":"geen geldige meting - staat de chip live?"}')
             elif self.path == "/api/update/apply":
-                if not self._local():
-                    return self._send(403, "application/json",
-                                      b'{"ok":false,"error":"bijwerken kan alleen op de laptop"}')
+                # Bijwerken mag nu ook vanaf de iPad: het downloaden én installeren
+                # gebeurt hoe dan ook op de laptop (deze server draait daar). De iPad
+                # stuurt enkel het startsein, de nieuwe versie komt op de laptop terecht.
                 r = apply_update()
                 self._send(200, "application/json", json.dumps(r).encode())
                 if r.get("ok"): _restart_soon()
             elif self.path == "/api/update/rollback":
-                if not self._local():
-                    return self._send(403, "application/json",
-                                      b'{"ok":false,"error":"terugzetten kan alleen op de laptop"}')
+                # Terugzetten mag ook vanaf de iPad (gebeurt op de laptop).
                 r = rollback_update()
                 self._send(200, "application/json", json.dumps(r).encode())
                 if r.get("ok"): _restart_soon()

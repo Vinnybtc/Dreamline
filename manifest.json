@@ -1,5 +1,5 @@
 {
-  "version": "1.6.8",
-  "notes": "Nieuw in 1.6.8:\n- Temperatuur leest nu continu live mee; je hoeft de USB NIET meer los te trekken.\n- Ingebouwde bewaker: valt de meting toch even stil, dan opent Dreamline het kanaal zelf opnieuw (automatische 'replug'). De temperatuur volgt nu ook netjes mee als een voeler afkoelt.\n- Knop 'Opmerking': een idee of probleem doorgeven; wordt veilig bewaard en (met ingestelde bestemming) naar jou doorgestuurd.",
+  "version": "1.7.0",
+  "notes": "Nieuw in 1.7.0:\n- Jij krijgt nu vanzelf een seintje + logboek zodra een winkel-pc de nieuwste versie heeft geïnstalleerd (komt in je eigen Google Sheet, als je de bestemming hebt ingesteld).\n- Slimmere, rustigere stijgsnelheid (RoR) volgens de Artisan-methode (polyfit over een tijdvenster), met onderdrukking van losse meet-uitschieters.\n- Keerpunt (TP) wordt automatisch herkend en op de grafiek gezet.\n- Het QR-koppelscherm verschijnt alleen de allereerste keer. Is er al een iPad gekoppeld of verbonden? Dan open je het voortaan zelf via de knop 'Koppel iPad'.\n- Bijwerken kan nu ook vanaf de iPad: tik op 'Update' en de nieuwe versie wordt op de laptop opgehaald en geïnstalleerd.",
   "files": ["index.html", "dreamline.py", "qr.py"]
 }

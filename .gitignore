@@ -1,0 +1,13 @@
+# Runtime / lokale bestanden — per laptop, ontstaan tijdens gebruik, niet committen
+dreamline_cal.json
+feedback.json
+just_updated.json
+paired.json
+update_log.json
+backup/
+roasts.db
+
+# Python / macOS rommel
+__pycache__/
+*.pyc
+.DS_Store

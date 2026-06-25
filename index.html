@@ -437,7 +437,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
   <div class="sheet">
     <button class="x" data-close>×</button>
     <h2>Updates</h2>
-    <p class="sub">Hier haal je nieuwe versies van Dreamline op. Bijwerken kan alleen op de laptop, en je kunt altijd met één tik terug naar de vorige versie als iets niet bevalt.</p>
+    <p class="sub">Hier haal je nieuwe versies van Dreamline op — vanaf de laptop én vanaf de iPad. De nieuwe versie wordt op de laptop opgehaald en geïnstalleerd, en je kunt altijd met één tik terug naar de vorige versie als iets niet bevalt.</p>
     <div class="updbox" id="updBody"><div class="empty">Controleren…</div></div>
     <div class="updrow">
       <button class="tool" id="btnUpdCheck">Opnieuw controleren</button>
@@ -462,6 +462,24 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
   </div>
 </div>
 
+<div class="overlay" id="ovVerify" hidden>
+  <div class="sheet" style="max-width:480px">
+    <button class="x" data-close>×</button>
+    <h2>Bijgewerkt ✓ — even controleren</h2>
+    <p class="sub">Dreamline is bijgewerkt naar versie <b id="vrTo">–</b>. Controleer in 20 seconden of de temperatuur goed live meeleest. Je hoeft hier niets technisch voor te weten.</p>
+    <ol style="margin:6px 0 0;padding-left:20px;line-height:1.65;font-size:14px">
+      <li>Kijk op het scherm: bewegen <b>ET (lucht)</b> en <b>BT (boon)</b> allebei een beetje? Dan leest hij live mee. 👍</li>
+      <li>Maak nu één voeler koeler — bijvoorbeeld er een koud lepeltje tegenaan houden. De waarde van díé voeler moet binnen ±10 seconden <b>zakken</b>.</li>
+      <li>Beweegt een waarde niet? <b>Niets doen.</b> Dreamline ververst de verbinding voortaan zelf — je hoeft de USB <b>niet</b> meer los te trekken. Wacht ±10 seconden, dan loopt hij weer.</li>
+      <li>Blijft het hangen? Druk op <b>“Opmerking”</b> en beschrijf kort wat je ziet. Dat komt veilig bij Vincent terecht, ook als hij er niet is.</li>
+    </ol>
+    <div class="updrow" style="margin-top:16px">
+      <button class="tool" id="btnVrFb">Opmerking geven</button>
+      <button class="tool" id="btnVrOk">Begrepen</button>
+    </div>
+  </div>
+</div>
+
 <div class="overlay" id="ovUpdPop" hidden>
   <div class="sheet" style="max-width:380px;text-align:center">
     <div style="font-size:46px;line-height:1">☕</div>
@@ -476,8 +494,8 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.6.8";
-const EV_LABEL = {CHARGE:"CHARGE", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
+const APP_VERSION = "1.7.0";
+const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
 const state = {
@@ -538,7 +556,18 @@ function connect(){
     const fail = setTimeout(()=>{ if(!opened){ es.close(); startDemo(); } }, 2200);
     es.onopen = ()=>{ opened=true; clearTimeout(fail); setStatus("live");
       updCheckSilent();
-      if(isLaptop() && !window._qrShown){ window._qrShown=true; $("#btnPair").hidden=false; setTimeout(openQr,500); } };
+      if(isLaptop()){
+        $("#btnPair").hidden=false;          // koppelen kan altijd 'op oproep'
+        if(!window._qrShown){
+          fetch("/info").then(x=>x.json()).then(info=>{
+            // alleen de állereerste keer automatisch tonen; niet als er al ooit
+            // gekoppeld is of er nu al een iPad/telefoon verbonden is
+            if(!window._qrShown && !info.ever_paired && !info.remote_connected){
+              window._qrShown=true; setTimeout(openQr,500);
+            }
+          }).catch(()=>{});
+        }
+      } };
     es.onmessage = e=>{
       const m = JSON.parse(e.data);
       if(m.k==="snapshot"){ if(m.version) checkServerVersion(m.version); if(m.source_mode) setSourcePill(m.source_mode); if(!state.viewing){ resetState(); (m.samples||[]).forEach(s=>state.samples.push(s));
@@ -693,7 +722,7 @@ function draw(){
   const show=(id,v,d=0)=>$(id).textContent = v==null?"–":v.toFixed(d);
   show("#btVal", state.bt==null?null:cToDisp(state.bt), state.unit==="F"?0:1);
   show("#etVal", state.et==null?null:cToDisp(state.et), 0);
-  const rorShow = (state.ror==null || state.t<45 || Math.abs(state.ror)>120) ? null : rorToDisp(state.ror);
+  const rorShow = (state.ror==null || state.t<20 || Math.abs(state.ror)>130) ? null : rorToDisp(state.ror);
   show("#rorVal", rorShow, 1);
   updatePhases();
 }
@@ -944,6 +973,7 @@ function checkAlarm(){
   else if(drop<-th){ fireAlarm("RoR springt op — flick?"); lastAlarmAt=now; }
 }
 setInterval(coachTick, 500);
+setInterval(updCheckSilent, 120000);   // elke 2 min vanzelf op updates checken
 
 /* ---------- controls ---------- */
 $("#unitSeg").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b)return;
@@ -963,7 +993,7 @@ async function updCheckSilent(){
     if(r && r.current){ const vl=$("#verLabel"); if(vl) vl.textContent="v"+r.current; }
     if(r && r.update_available){
       $("#btnUpd").hidden=false;
-      if(isLaptop() && !window._updPopShown){
+      if(!window._updPopShown){
         window._updPopShown=true;
         $("#updPopText").textContent="Versie v"+(r.latest||"?")+" staat klaar."+(r.notes? " "+String(r.notes).split("\n")[0] : "");
         openOv("#ovUpdPop");
@@ -993,10 +1023,10 @@ async function doUpdCheck(){
   }
 }
 async function doUpdApply(){
-  $("#updHint").textContent="Installeren…";
+  $("#updHint").textContent="Bezig met installeren op de laptop…";
   let r; try{ r=await fetch("/api/update/apply",{method:"POST"}).then(x=>x.json()); }
   catch(_){ $("#updHint").textContent="Installeren mislukt (geen verbinding)."; return; }
-  if(r.ok){ $("#updHint").textContent="Geïnstalleerd (v"+r.from+" → v"+r.to+"). Dreamline herstart even; dit scherm laadt zo opnieuw…"; setTimeout(()=>location.reload(), 5000); }
+  if(r.ok){ $("#updHint").textContent="Op de laptop geïnstalleerd (v"+r.from+" → v"+r.to+"). Dreamline herstart even; dit scherm laadt zo opnieuw…"; setTimeout(()=>location.reload(), 5000); }
   else { $("#updHint").textContent = r.error || "Installeren mislukt."; }
 }
 async function doUpdRollback(){
@@ -1030,6 +1060,21 @@ async function sendFeedback(){
   }catch(_){ $("#fbHint").textContent="Geen verbinding met de laptop — probeer het zo nog eens."; }
   $("#fbSend").disabled=false;
 }
+
+/* ---------- na een update: controle-scherm tonen (1x) ---------- */
+(async function checkJustUpdated(){
+  try{
+    const r = await fetch("/api/justupdated").then(x=>x.json());
+    if(r && r.updated){
+      const t=$("#vrTo"); if(t) t.textContent = "v"+(r.to||"?");
+      window._qrShown = true;          // QR-koppelscherm niet automatisch eroverheen laten komen
+      openOv("#ovVerify");
+      fetch("/api/justupdated/clear",{method:"POST"}).catch(()=>{}); // maar één keer tonen
+    }
+  }catch(_){}
+})();
+if($("#btnVrOk")) $("#btnVrOk").onclick = closeOv;
+if($("#btnVrFb")) $("#btnVrFb").onclick = ()=>{ closeOv(); const b=$("#btnFb"); if(b) b.click(); };
 
 /* stap-2 knoppen */
 $("#btnHelp").onclick=()=>openHelp();
