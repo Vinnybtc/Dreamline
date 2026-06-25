@@ -30,7 +30,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.6.8"
+VERSION = "1.6.10"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 BACKUP_DIR = HERE / "backup"                # vorige versie, voor 1-tik rollback
 UPDATABLE = ("index.html", "dreamline.py", "qr.py")   # alleen deze mag een update vervangen
@@ -528,7 +528,7 @@ def rtd_ratio_to_temp(bv, r_ref=None, r0=None, gain=None):
     return _rtd_res_to_temp(r, r0)
 
 
-def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
+def sensor_loop(bt_ch, et_ch, tc_type, period=0.3, rtd=True):
     """Houdt de Phidget continu in de gaten en schakelt vanzelf om.
     RTD (1046): leest kanaal 0 en 1 als VoltageRatio en rekent om naar temperatuur
     (PT100). Welk kanaal BT is en welk ET wordt door CAL['swap'] bepaald, en is in
@@ -546,7 +546,7 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     soort = "RTD-bridge (1046, PT100)" if rtd else "thermokoppel (1048, type %s)" % tc_type
     attached = {0: False, 1: False}
     latest = {0: None, 1: None}     # laatste ruwe waarde via change-event (1046 vereist dit)
-    last_data = {"t": 0.0}          # tijdstip van de laatste binnengekomen meting (voor de bewaker)
+    last_data = {0: 0.0, 1: 0.0}    # per kanaal: tijdstip van de laatste verse meting (voor de bewaker)
     reopening = {"v": False}        # True tijdens automatisch heropenen (onderdrukt 'wachten'-melding)
 
     def _both():
@@ -555,7 +555,7 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
     def on_change(ch_no):
         def handler(ch, value):
             latest[ch_no] = value
-            last_data["t"] = time.monotonic()
+            last_data[ch_no] = time.monotonic()
         return handler
 
     def on_attach(ch_no):
@@ -570,9 +570,9 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
             else:
                 try: ch.setThermocoupleType(_tc(tc_type))
                 except Exception: pass
-            try: ch.setDataInterval(max(ch.getMinDataInterval(), 250))
+            try: ch.setDataInterval(max(ch.getMinDataInterval(), 150))
             except Exception: pass
-            last_data["t"] = time.monotonic()   # stale-klok start zodra de chip er is
+            last_data[ch_no] = time.monotonic()   # stale-klok van dit kanaal start zodra het er is
             if _both():
                 STATE.set_source("chip")
                 print("[dreamline] chip verbonden - live uitlezing actief (%s)." % soort)
@@ -607,13 +607,12 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
         return sim_loop()
 
     def raw(ch_no):
-        # voorkeur: laatste waarde uit het change-event (blijft live). Anders 1x uitvragen.
-        if latest[ch_no] is not None:
-            return latest[ch_no]
+        # Actief uitvragen elke ronde: pakt ook nieuwe waarden op als het change-event
+        # niet (vaak genoeg) afgaat. Lukt dat niet, val terug op de laatste event-waarde.
         try:
             return sens[ch_no].getVoltageRatio() if rtd else sens[ch_no].getTemperature()
         except Exception:
-            return None
+            return latest[ch_no]
 
     def conv(ch_no, r):
         if r is None:
@@ -623,24 +622,32 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
         return rtd_ratio_to_temp(r, CAL["rref0"] if ch_no == 0 else CAL["rref1"])
 
     warned = False; n = 0
-    STALE = 4.0          # seconden zonder nieuwe meting voordat we automatisch heropenen
+    STALE = 2.5          # seconden zonder nieuwe meting voordat we automatisch heropenen
     last_reopen = 0.0
+    prev = {0: None, 1: None}
     def _reopen():
         reopening["v"] = True
         for s in sens.values():
             try: s.close()
             except Exception: pass
-        time.sleep(0.4)
+        time.sleep(0.25)
         for s in sens.values():
             try: s.open()
             except Exception: pass
-        last_data["t"] = time.monotonic()
+        last_data[0] = last_data[1] = time.monotonic()
+        prev[0] = prev[1] = None
         reopening["v"] = False
     while True:
         if _both():
             try:
                 r0, r1 = raw(0), raw(1)
                 STATE.raw0, STATE.raw1 = r0, r1
+                # leeft de chip? een echte meting ruist altijd iets; verandert er iets op
+                # een kanaal, dan stroomt daar verse data — dat kanaal is dan 'vers'.
+                nowm = time.monotonic()
+                if r0 is not None and r0 != prev[0]: last_data[0] = nowm
+                if r1 is not None and r1 != prev[1]: last_data[1] = nowm
+                prev[0], prev[1] = r0, r1
                 t0, t1 = conv(0, r0), conv(1, r1)
                 if t0 is not None and t1 is not None:
                     # standaard: BT = kanaal 0, ET = kanaal 1 ; 'swap' keert dit om
@@ -654,11 +661,17 @@ def sensor_loop(bt_ch, et_ch, tc_type, period=0.5, rtd=True):
                 pass
             # bewaker: staat de meting stil? dan zelf het kanaal heropenen
             # (vervangt het handmatig lostrekken van de USB).
+            # bewaker: staat één van de twee voelers stil? dan zelf de verbinding
+            # verversen (vervangt het handmatig lostrekken van de USB). Per kanaal,
+            # zodat een bevroren BT niet 'verstopt' wordt door een lopende ET.
             now = time.monotonic()
-            if last_data["t"] and (now - last_data["t"]) > STALE and (now - last_reopen) > STALE:
+            stale0 = (now - last_data[0]) > STALE
+            stale1 = (now - last_data[1]) > STALE
+            if (stale0 or stale1) and (now - last_reopen) > STALE:
                 last_reopen = now
-                print("[dreamline] meting stond stil - kanaal wordt automatisch heropend "
-                      "(geen USB lostrekken nodig).")
+                which = "beide voelers" if (stale0 and stale1) else ("voeler 1 (kanaal 0)" if stale0 else "voeler 2 (kanaal 1)")
+                print("[dreamline] %s stond stil - verbinding wordt automatisch ververst "
+                      "(geen USB lostrekken nodig)." % which)
                 _reopen()
         time.sleep(period)
 
@@ -733,8 +746,14 @@ def _url_allowed(u):
         pass
     return False
 
+def _cb(u):
+    """Voeg een wisselende parameter toe zodat GitHub's cache wordt omzeild (verse versie)."""
+    sep = "&" if "?" in u else "?"
+    return u + sep + "cb=" + str(int(time.time()))
+
 def _fetch(u, cap):
-    req = urllib.request.Request(u, headers={"User-Agent": "Dreamline/%s" % VERSION})
+    req = urllib.request.Request(u, headers={"User-Agent": "Dreamline/%s" % VERSION,
+                                             "Cache-Control": "no-cache", "Pragma": "no-cache"})
     with urllib.request.urlopen(req, timeout=8) as r:
         return r.read(cap + 1)
 
@@ -748,7 +767,7 @@ def check_update():
     if not _url_allowed(u):
         out["error"] = "manifest-URL niet toegestaan (gebruik https)"; return out
     try:
-        m = json.loads(_fetch(u, 256 * 1024).decode("utf-8", "replace"))
+        m = json.loads(_fetch(_cb(u), 256 * 1024).decode("utf-8", "replace"))
         out["reachable"] = True
         out["latest"] = str(m.get("version", ""))
         out["notes"] = str(m.get("notes", ""))
@@ -764,7 +783,7 @@ def apply_update():
         return {"ok": False, "error": "updates niet (juist) ingesteld"}
     base = u.rsplit("/", 1)[0]
     try:
-        m = json.loads(_fetch(u, 256 * 1024).decode("utf-8", "replace"))
+        m = json.loads(_fetch(_cb(u), 256 * 1024).decode("utf-8", "replace"))
     except Exception as e:
         return {"ok": False, "error": "manifest niet leesbaar: %s" % e}
     latest = str(m.get("version", ""))
@@ -777,7 +796,7 @@ def apply_update():
         if not _url_allowed(fu):
             return {"ok": False, "error": "bestand-URL niet toegestaan: %s" % f}
         try:
-            data = _fetch(fu, MAX_FILE)
+            data = _fetch(_cb(fu), MAX_FILE)
         except Exception as e:
             return {"ok": False, "error": "download mislukt (%s): %s" % (f, e)}
         if not data or len(data) > MAX_FILE:
