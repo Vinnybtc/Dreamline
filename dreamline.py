@@ -998,8 +998,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 self._send(200, "application/json", json.dumps(info).encode())
             elif path == "/api/feedback":
-                if not self._local():
-                    return self._send(403, "application/json", b"[]")
+                # Opmerkingen inzien mag nu ook vanaf de iPad (eigenaar-bediening).
                 try:
                     fb = json.loads(FEEDBACK_PATH.read_text(encoding="utf-8")) if FEEDBACK_PATH.exists() else []
                 except Exception:
@@ -1114,8 +1113,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
             elif self.path == "/api/fbdest":
-                if not self._local():
-                    return self._send(403, "application/json", b'{"ok":false,"error":"alleen op de laptop"}')
+                # Privé-webhook instellen mag nu ook vanaf de iPad (eigenaar-bediening).
                 url = str(data.get("url", "")).strip()
                 if url and not (url.startswith("https://") or url.startswith("http://localhost")):
                     return self._send(200, "application/json", b'{"ok":false,"error":"gebruik een https-adres"}')

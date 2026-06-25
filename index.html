@@ -425,7 +425,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
     <div id="fbDestWrap" hidden>
       <h2 style="margin-top:26px">Opmerkingen → naar jou</h2>
-      <p class="sub">Alleen zichtbaar op de laptop. Plak hier jouw eigen, privé webhook-adres (zie de uitleg die je van de maker kreeg). Opmerkingen uit de app worden dan veilig naar dat adres gestuurd — alleen jij kunt ze lezen. Laat leeg om alleen lokaal te bewaren.</p>
+      <p class="sub">Plak hier jouw eigen, privé webhook-adres (zie de uitleg die je van de maker kreeg). Opmerkingen uit de app worden dan veilig naar dat adres gestuurd — alleen jij kunt ze lezen. Laat leeg om alleen lokaal te bewaren.</p>
       <input id="fbDest" placeholder="https://script.google.com/macros/s/…/exec" style="width:100%;box-sizing:border-box;padding:9px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
       <div class="updrow" style="margin-top:10px"><button class="tool" id="btnFbDest">Opslaan</button></div>
       <div class="hint" id="fbDestHint" style="margin-top:8px"></div>
@@ -1117,8 +1117,7 @@ async function refreshCal(){
     $("#calHint").textContent="Nu live — ET (lucht): "+f(s.et)+"   BT (boon): "+f(s.bt);
     const wrap=$("#fbDestWrap");
     if(wrap){
-      if(s.is_laptop){ wrap.hidden=false; if(document.activeElement!==$("#fbDest")) $("#fbDest").value=s.feedback_url||""; }
-      else wrap.hidden=true;
+      wrap.hidden=false; if(document.activeElement!==$("#fbDest")) $("#fbDest").value=s.feedback_url||"";
     }
   }catch(_){}
 }
