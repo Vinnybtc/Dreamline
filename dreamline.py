@@ -17,6 +17,7 @@ Open daarna op de iPad in Safari het adres dat hieronder geprint wordt
 
 import argparse, json, math, socket, threading, time, queue, webbrowser, sys
 import sqlite3, ast, datetime, glob, os, shutil, urllib.request, urllib.parse
+import hashlib, ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -30,7 +31,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 # Standaard-bestemming voor opmerkingen + update-meldingen. Publiek relay-endpoint
 # (geen secret): de winkel-pc stuurt hier automatisch naartoe, zonder dat iemand iets
@@ -47,6 +48,10 @@ ROR_SPAN = 14.0        # seconden: venster waarover RoR wordt berekend (delta-sp
 ROR_CLAMP = (-90.0, 130.0)   # RoR begrenzen op zinnige waarden (°/min)
 SPIKE_MAX = 25.0       # °C: grotere sprong tussen 2 metingen = spike -> mediaan-filter vangt 'm
 TP_RISE = 3.0          # °C boven het minimum voordat we het keerpunt (TP) vaststellen
+SMOOTH_TAU = 2.5       # seconden: tijdconstante van de curve-gladstrijker (EMA). De mediaan
+                       # vangt losse uitschieters; deze EMA haalt de fijne sensorruis eruit
+                       # zodat de lijn vloeiend loopt (Artisan 'curve smoothing').
+SAMPLE_EVERY = 0.25    # seconden: dichtere opslag van meetpunten = vloeiender lijn
 
 PAIRED_PATH = HERE / "paired.json"     # onthoudt of er ooit een iPad is gekoppeld
 UPDATE_LOG = HERE / "update_log.json"  # logboek van geïnstalleerde updates (voor jou)
@@ -70,10 +75,14 @@ class State:
         self.raw1 = None                 # laatste ruwe VoltageRatio kanaal 1
         self._bt3 = []                   # laatste 3 ruwe BT-metingen (mediaanfilter tegen spikes)
         self._et3 = []                   # idem voor ET
+        self._ema_bt = None              # gladgestreken BT (EMA over SMOOTH_TAU seconden)
+        self._ema_et = None              # gladgestreken ET
+        self._ema_ts = None              # monotonic tijd van de vorige EMA-stap
         self._tp_min = None              # laagste BT na CHARGE (voor keerpunt-detectie)
         self._tp_min_t = None
         self._tp_first = None            # eerste BT na CHARGE (om een echte dip te herkennen)
         self.remote = 0                  # aantal verbonden iPads/telefoons (niet-localhost)
+        self.ref_id = None               # gedeeld referentieprofiel (roast-id) voor álle schermen
 
     # ---- abonnees ----
     def subscribe(self):
@@ -109,7 +118,15 @@ class State:
                     "version": VERSION,
                     "source_mode": self.source_mode,
                     "samples": list(self.samples),
-                    "events": dict(self.events)}
+                    "events": dict(self.events),
+                    "ref_id": self.ref_id}
+
+    def set_reference(self, rid):
+        """Zet (of wis, rid=None) het gedeelde referentieprofiel en vertel het iedereen.
+        Zo zien laptop én iPad dezelfde referentiecurve, waar die ook gekozen is."""
+        with self.lock:
+            self.ref_id = rid
+        self.broadcast({"k": "ref", "id": rid})
 
     # ---- metingen ----
     @staticmethod
@@ -119,6 +136,20 @@ class State:
             buf.pop(0)
         return sorted(buf)[len(buf) // 2]
 
+    def _smooth(self, et_c, bt_c, ts):
+        # EMA met tijd-gebaseerde alpha: onafhankelijk van de meetfrequentie.
+        # De mediaan hiervóór vangt spikes; dit haalt de fijne ruis eruit.
+        # ts = tijdbasis: kloktijd bij de echte chip, roast-tijd bij simulatie.
+        if self._ema_ts is None or self._ema_bt is None:
+            self._ema_bt, self._ema_et = bt_c, et_c
+        else:
+            dt = max(1e-3, ts - self._ema_ts)
+            a = 1.0 - math.exp(-dt / SMOOTH_TAU)
+            self._ema_bt += a * (bt_c - self._ema_bt)
+            self._ema_et += a * (et_c - self._ema_et)
+        self._ema_ts = ts
+        return self._ema_et, self._ema_bt
+
     def add_reading(self, et_c, bt_c, t_override=None):
         now = time.monotonic()
         with self.lock:
@@ -126,6 +157,8 @@ class State:
             # Een losse uitschieter (ruis/contactstoring) verdwijnt; echte bewegingen blijven.
             et_c = self._med3(self._et3, et_c)
             bt_c = self._med3(self._bt3, bt_c)
+            # curve-gladstrijker: vloeiende lijn zonder de meting te vertragen (tau 2.5s)
+            et_c, bt_c = self._smooth(et_c, bt_c, now if t_override is None else t_override)
             self.et, self.bt = et_c, bt_c
             if self.charge is None:
                 # voor CHARGE: alleen de uitlezing tonen, nog niet plotten
@@ -133,8 +166,8 @@ class State:
                 return
             t = t_override if t_override is not None else (now - self.charge)
             last = self.samples[-1] if self.samples else None
-            if not last or t - last["t"] >= 0.5:
-                self.samples.append({"t": round(t, 1), "et": round(et_c, 1), "bt": round(bt_c, 1)})
+            if not last or t - last["t"] >= SAMPLE_EVERY:
+                self.samples.append({"t": round(t, 1), "et": round(et_c, 2), "bt": round(bt_c, 2)})
             ror = self._ror(bt_c, t)
             self.ror = ror
             self._detect_tp(bt_c, t)
@@ -142,7 +175,7 @@ class State:
 
     def broadcast_live(self, et_c, bt_c, ror, t=None):
         self.broadcast({"k": "reading", "t": round(t, 1) if t is not None else None,
-                        "et": round(et_c, 1), "bt": round(bt_c, 1),
+                        "et": round(et_c, 2), "bt": round(bt_c, 2),
                         "ror": round(ror, 2) if ror is not None else None})
 
     def _ror(self, bt_now, t_now):
@@ -187,6 +220,7 @@ class State:
                 self.bt = self.et = self.ror = None
                 self.saved_id = None
                 self._bt3 = []; self._et3 = []
+                self._ema_bt = self._ema_et = self._ema_ts = None
                 self._tp_min = None; self._tp_min_t = None; self._tp_first = None
             self.broadcast({"k": "reset"})
             return
@@ -464,7 +498,7 @@ def phidget_scan(tc_type, seconds=25, rtd=True):
         except Exception: pass
 
 
-def phidget_loop(bt_ch, et_ch, tc_type, period=0.5):
+def phidget_loop(bt_ch, et_ch, tc_type, period=0.25):
     """Echte uitlezing van de Phidget 1048."""
     try:
         from Phidget22.Devices.TemperatureSensor import TemperatureSensor
@@ -584,7 +618,7 @@ def rtd_ratio_to_temp(bv, r_ref=None, r0=None, gain=None):
     return _rtd_res_to_temp(r, r0)
 
 
-def sensor_loop(bt_ch, et_ch, tc_type, period=0.3, rtd=True):
+def sensor_loop(bt_ch, et_ch, tc_type, period=0.25, rtd=True):
     """Houdt de Phidget continu in de gaten en schakelt vanzelf om.
     RTD (1046): leest kanaal 0 en 1 als VoltageRatio en rekent om naar temperatuur
     (PT100). Welk kanaal BT is en welk ET wordt door CAL['swap'] bepaald, en is in
@@ -849,6 +883,10 @@ def _fetch(u, cap):
     req = urllib.request.Request(u, headers={"User-Agent": "Dreamline/%s" % VERSION,
                                              "Cache-Control": "no-cache", "Pragma": "no-cache"})
     with urllib.request.urlopen(req, timeout=8) as r:
+        # ook ná eventuele redirects moet de URL veilig blijven (geen https->http downgrade)
+        final = r.geturl() or u
+        if not _url_allowed(final):
+            raise ValueError("redirect naar niet-toegestane URL: %s" % final)
         return r.read(cap + 1)
 
 def check_update():
@@ -884,6 +922,7 @@ def apply_update():
     files = [f for f in (m.get("files") or []) if f in UPDATABLE]
     if not files:
         return {"ok": False, "error": "manifest bevat geen geldige bestanden"}
+    hashes = m.get("sha256") or {}                    # optioneel: integriteits-hashes per bestand
     blobs = {}
     for f in files:                                   # 1) downloaden + valideren in geheugen
         fu = base + "/" + f
@@ -895,6 +934,11 @@ def apply_update():
             return {"ok": False, "error": "download mislukt (%s): %s" % (f, e)}
         if not data or len(data) > MAX_FILE:
             return {"ok": False, "error": "bestand leeg of te groot: %s" % f}
+        want = str(hashes.get(f, "")).strip().lower()
+        if want:                                      # staat er een hash in het manifest? dan MOET die kloppen
+            got = hashlib.sha256(data).hexdigest()
+            if got != want:
+                return {"ok": False, "error": "controlegetal klopt niet voor %s - update afgebroken" % f}
         if f.endswith(".py"):
             try: compile(data.decode("utf-8"), f, "exec")
             except Exception as e:
@@ -954,10 +998,21 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, ctype, body=b""):
+    # Basis-beveiligingsheaders op elk antwoord; CSP alleen op de app-pagina.
+    CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; "
+           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+           "font-src https://fonts.gstatic.com; img-src 'self' data:; "
+           "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+
+    def _send(self, code, ctype, body=b"", csp=False):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        if csp:
+            self.send_header("Content-Security-Policy", self.CSP)
         self.end_headers()
         if body:
             self.wfile.write(body)
@@ -966,12 +1021,46 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
 
+    def _host_ok(self):
+        """Weer DNS-rebinding af: de app wordt altijd via een IP-adres of localhost
+        geopend. Een verzoek met een (kwaadaardige) domeinnaam in de Host-header
+        hoort hier dus nooit binnen te komen."""
+        h = (self.headers.get("Host") or "").strip()
+        if not h:
+            return True          # niet-browser clients (curl/oude HTTP) hebben geen Host
+        if h.startswith("["):    # IPv6: [::1]:8080
+            host = h[1:h.find("]")] if "]" in h else h
+        else:
+            host = h.rsplit(":", 1)[0] if ":" in h else h
+        if host.lower() == "localhost":
+            return True
+        try:
+            ipaddress.ip_address(host)
+            return True
+        except ValueError:
+            return False
+
+    def _origin_ok(self):
+        """Weer cross-site verzoeken (CSRF vanaf een willekeurige website) af:
+        stuurt de browser een Origin mee, dan moet die bij deze server horen."""
+        o = (self.headers.get("Origin") or "").strip()
+        if not o:
+            return True          # geen Origin = geen browser-cross-site (curl, oude Safari)
+        if o == "null":
+            return False
+        try:
+            return urllib.parse.urlparse(o).netloc == (self.headers.get("Host") or "").strip()
+        except Exception:
+            return False
+
     def do_GET(self):
         try:
+            if not self._host_ok():
+                return self._send(403, "text/plain", b"forbidden")
             path = self.path.split("?")[0]
             if path in ("/", "/index.html", "/index.htm"):
                 try:
-                    self._send(200, "text/html; charset=utf-8", INDEX.read_bytes())
+                    self._send(200, "text/html; charset=utf-8", INDEX.read_bytes(), csp=True)
                 except FileNotFoundError:
                     self._send(500, "text/plain", b"index.html niet gevonden naast dreamline.py")
             elif path == "/state":
@@ -1044,7 +1133,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        # bewust GEEN Access-Control-Allow-Origin: de stream is alleen voor de
+        # eigen app (zelfde herkomst), niet voor willekeurige websites.
         self.end_headers()
         q = STATE.subscribe()
         # is dit een iPad/telefoon (niet de laptop zelf)? dan telt het als 'gekoppeld'
@@ -1078,6 +1168,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if not self._host_ok() or not self._origin_ok():
+                return self._send(403, "application/json", b'{"ok":false,"error":"verboden"}')
             try:
                 n = int(self.headers.get("Content-Length", 0) or 0)
             except ValueError:
@@ -1101,7 +1193,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         if data.get(k) not in (None, ""): meta[k] = float(data[k])
                     except (TypeError, ValueError): pass
-                if data.get("unit"): meta["unit"] = str(data["unit"])
+                if data.get("unit"): meta["unit"] = str(data["unit"])[:8]
                 with STATE.lock:
                     rid = STATE.saved_id
                 if rid:
@@ -1131,6 +1223,20 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, "application/json", json.dumps({"ok": True, "url": url}).encode())
                 except Exception as e:
                     self._send(200, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
+            elif self.path == "/api/ref":
+                # Gedeeld referentieprofiel: gekozen op laptop óf iPad, zichtbaar op allebei.
+                rid = data.get("id")
+                if rid in (None, "", 0):
+                    STATE.set_reference(None)
+                    return self._send(200, "application/json", b'{"ok":true,"id":null}')
+                try:
+                    rid = int(rid)
+                except (TypeError, ValueError):
+                    return self._send(200, "application/json", b'{"ok":false,"error":"ongeldig id"}')
+                if db_get(rid) is None:
+                    return self._send(200, "application/json", b'{"ok":false,"error":"roast niet gevonden"}')
+                STATE.set_reference(rid)
+                self._send(200, "application/json", json.dumps({"ok": True, "id": rid}).encode())
             elif self.path == "/api/justupdated/clear":
                 try:
                     p = HERE / "just_updated.json"

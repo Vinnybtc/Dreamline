@@ -494,7 +494,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -505,6 +505,7 @@ const state = {
   bt:null, et:null, ror:null,
   t:0,                   // current roast time (s)
   ref:null,              // referentiecurve {samples,title}
+  refId:null,            // id van de gedeelde referentie (gesynct via de server)
   viewing:false,         // true = een opgeslagen roast volledig bekijken (live gepauzeerd)
   coach:{ sound:true, vol:0.55, milestone:true, eta:true, alarm:true, sens:"normaal" },
 };
@@ -535,7 +536,7 @@ function applyReading(r){               // r:{t,et,bt,ror}
   if(r.t==null) return;                 // voor CHARGE: alleen de uitlezing tonen
   state.t = r.t;
   const last = state.samples[state.samples.length-1];
-  if(!last || r.t - last.t >= 0.4) state.samples.push({t:r.t, et:r.et, bt:r.bt});
+  if(!last || r.t - last.t >= 0.2) state.samples.push({t:r.t, et:r.et, bt:r.bt});
 }
 function applyEvent(type, t){ if(state.viewing) return; if(type==="RESET"){resetState();return;} state.events[type]=t; markBtn(type); }
 function markBtn(type){ document.querySelectorAll(".ev").forEach(b=>{ if(b.dataset.ev===type) b.classList.add("done"); }); }
@@ -571,10 +572,12 @@ function connect(){
     es.onmessage = e=>{
       const m = JSON.parse(e.data);
       if(m.k==="snapshot"){ if(m.version) checkServerVersion(m.version); if(m.source_mode) setSourcePill(m.source_mode); if(!state.viewing){ resetState(); (m.samples||[]).forEach(s=>state.samples.push(s));
-        Object.assign(state.events, m.events||{}); Object.keys(state.events).forEach(markBtn); } }
+        Object.assign(state.events, m.events||{}); Object.keys(state.events).forEach(markBtn); }
+        if("ref_id" in m) syncReference(m.ref_id); }
       else if(m.k==="reading") applyReading(m);
       else if(m.k==="event") applyEvent(m.type, m.t);
       else if(m.k==="status") setSourcePill(m.mode);
+      else if(m.k==="ref") syncReference(m.id);
       else if(m.k==="reset") resetState();
     };
     es.onerror = ()=>{ if(!opened){ clearTimeout(fail); es.close(); startDemo(); }
@@ -620,6 +623,19 @@ const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).
 const PAD = {l:46,r:50,t:18,b:26};
 
 function niceMax(v,step){ return Math.ceil(v/step)*step; }
+// Vloeiende lijn: kwadratische bogen door de middens tussen de meetpunten.
+// Haalt de laatste hoekigheid uit de curve zonder de data te veranderen.
+function strokeSmooth(pts){
+  if(pts.length<2) return;
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+  if(pts.length===2){ ctx.lineTo(pts[1].x, pts[1].y); ctx.stroke(); return; }
+  for(let i=1;i<pts.length-1;i++){
+    const mx=(pts[i].x+pts[i+1].x)/2, my=(pts[i].y+pts[i+1].y)/2;
+    ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+  }
+  ctx.lineTo(pts[pts.length-1].x, pts[pts.length-1].y);
+  ctx.stroke();
+}
 function draw(){
   requestAnimationFrame(draw);
   if(!W) return;
@@ -673,10 +689,10 @@ function draw(){
   if(state.ref && state.ref.samples && state.ref.samples.length>1){
     const R=state.ref.samples;
     ctx.save(); ctx.setLineDash([5,5]); ctx.lineWidth=2;
-    ctx.globalAlpha=.28; ctx.strokeStyle=css('--et'); ctx.beginPath();
-    R.forEach((s,i)=>{ const x=X(s.t), y=Yt(cToDisp(s.et)); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
-    ctx.globalAlpha=.5; ctx.strokeStyle=css('--gold'); ctx.beginPath();
-    R.forEach((s,i)=>{ const x=X(s.t), y=Yt(cToDisp(s.bt)); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+    ctx.globalAlpha=.28; ctx.strokeStyle=css('--et');
+    strokeSmooth(R.map(s=>({x:X(s.t), y:Yt(cToDisp(s.et))})));
+    ctx.globalAlpha=.5; ctx.strokeStyle=css('--gold');
+    strokeSmooth(R.map(s=>({x:X(s.t), y:Yt(cToDisp(s.bt))})));
     ctx.restore();
   }
 
@@ -684,8 +700,8 @@ function draw(){
   // ET
   if(S.length>1){
     ctx.lineWidth=2; ctx.lineJoin='round';
-    ctx.strokeStyle=css('--et'); ctx.beginPath();
-    S.forEach((s,i)=>{ const x=X(s.t), y=Yt(cToDisp(s.et)); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+    ctx.strokeStyle=css('--et');
+    strokeSmooth(S.map(s=>({x:X(s.t), y:Yt(cToDisp(s.et))})));
     // RoR (venster ~20s, geklemd binnen de grafiek)
     ctx.strokeStyle=css('--ror'); ctx.lineWidth=1.6; ctx.beginPath(); let st=false;
     const yTop=PAD.t, yBot=PAD.t+plotH;
@@ -701,8 +717,8 @@ function draw(){
     ctx.stroke();
     // BT — hero, with glow
     ctx.shadowColor=css('--bt-glow'); ctx.shadowBlur=12;
-    ctx.strokeStyle=css('--bt'); ctx.lineWidth=3; ctx.beginPath();
-    S.forEach((s,i)=>{ const x=X(s.t), y=Yt(cToDisp(s.bt)); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+    ctx.strokeStyle=css('--bt'); ctx.lineWidth=3;
+    strokeSmooth(S.map(s=>({x:X(s.t), y:Yt(cToDisp(s.bt))})));
     ctx.shadowBlur=0;
     // now dot
     const last=S[S.length-1]; const x=X(last.t), y=Yt(cToDisp(last.bt));
@@ -772,7 +788,7 @@ async function openHist(){
       if(r.dtr!=null) chips.push(`<span class="chip">DTR ${r.dtr}%</span>`);
       if(r.loss!=null) chips.push(`<span class="chip">−${r.loss}% gewicht</span>`);
       chips.push(`<span class="chip src">${r.source==="import"?"Artisan":"live"}</span>`);
-      b.innerHTML=`<div class="rt">${esc(r.title)}<span class="rd">${date}</span></div><div class="rc">${chips.join("")}</div>`+
+      b.innerHTML=`<div class="rt">${esc(r.title)}<span class="rd">${esc(date)}</span></div><div class="rc">${chips.join("")}</div>`+
         `<div class="ract" style="display:flex;gap:8px;margin-top:10px"><button class="tool" data-act="view">Bekijk</button><button class="tool" data-act="ref">Als referentie</button></div>`;
       b.querySelector('[data-act="view"]').onclick=()=>viewRoast(r.id);
       b.querySelector('[data-act="ref"]').onclick=()=>setReference(r.id);
@@ -780,14 +796,27 @@ async function openHist(){
     });
   }catch(_){ el.innerHTML='<div class="empty">Kon historie niet laden.</div>'; }
 }
+async function loadReference(id){
+  const r=await fetch("/api/roasts/"+id).then(x=>x.json());
+  state.ref={samples:r.samples||[], events:r.events||{}, title:r.title||"Roast"};
+  state.refId=id;
+  $("#refName").textContent=state.ref.title; $("#refChip").hidden=false;
+}
 async function setReference(id){
   try{
-    const r=await fetch("/api/roasts/"+id).then(x=>x.json());
-    state.ref={samples:r.samples||[], events:r.events||{}, title:r.title||"Roast"};
-    $("#refName").textContent=state.ref.title; $("#refChip").hidden=false; closeOv();
+    await loadReference(id); closeOv();
+    // deel de keuze via de server, zodat laptop én iPad dezelfde referentie tonen
+    if(state.mode==="live") fetch("/api/ref",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}).catch(()=>{});
   }catch(_){}
 }
-function clearReference(){ state.ref=null; $("#refChip").hidden=true; }
+function clearReference(){
+  state.ref=null; state.refId=null; $("#refChip").hidden=true;
+  if(state.mode==="live") fetch("/api/ref",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:null})}).catch(()=>{});
+}
+function syncReference(id){          // door de server gepusht (gekozen op een ander scherm)
+  if(id==null){ if(state.refId!=null){ state.ref=null; state.refId=null; $("#refChip").hidden=true; } return; }
+  if(id!==state.refId) loadReference(id).catch(()=>{});
+}
 
 async function viewRoast(id){
   try{
