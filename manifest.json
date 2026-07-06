@@ -1,6 +1,6 @@
 {
   "version": "1.8.0",
-  "notes": "Nieuw in 1.8.0:\n- De temperatuurlijn is nu écht vloeiend: de meting wordt vaker uitgelezen en slim gladgestreken (zoals Artisan), zonder vertraging of verlies van echte bewegingen.\n- Referentieprofiel wordt nu gedeeld: kies je op de laptop óf de iPad een referentie, dan zie je die meteen op allebei de schermen. Weghalen werkt ook op allebei tegelijk.\n- Veiligheid flink aangescherpt: de laptop accepteert geen opdrachten meer van vreemde websites, updates worden extra gecontroleerd met een controlegetal, en de pagina is beschermd tegen meekijkende scripts.",
+  "notes": "Nieuw in 1.8.0:\n- De temperatuurlijn is nu mooi vloeiend: de meting wordt vaker uitgelezen en slim gladgestreken, zonder vertraging.\n- Referentieprofiel wordt gedeeld: kies je op de laptop óf de iPad een referentie, dan zie je die meteen op allebei de schermen. Weghalen werkt ook op allebei tegelijk.\n- Verder een flinke onderhoudsbeurt onder de motorkap voor extra stabiliteit en veiligheid.",
   "files": [
     "index.html",
     "dreamline.py",
