@@ -31,7 +31,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 # Ingebouwde update-adressen: werkt ook als update_config.json ontbreekt of leeg is.
 # Meerdere hosts: sommige (winkel)netwerken blokkeren raw.githubusercontent.com;

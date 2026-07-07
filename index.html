@@ -299,7 +299,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
     <button class="tool" id="btnSave">Opslaan</button>
     <button class="tool" id="btnSet">Coach</button>
     <button class="tool" id="btnPair" hidden>Koppel iPad</button>
-    <button class="tool" id="btnUpd" hidden>Update<span class="dot-new"></span></button>
+    <button class="tool" id="btnUpd" title="Controleer op updates en installeer ze">Updates<span class="dot-new" id="hdrUpdDot" hidden></span></button>
     <button class="tool" id="btnFb" hidden>Opmerking</button>
     <button class="tool menubtn" id="btnMenu">☰&nbsp;Menu</button>
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">Verbinden…</span></div>
@@ -571,7 +571,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "1.9.1";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -1154,15 +1154,17 @@ async function updCheckSilent(){
       vh.classList.toggle("warn", trouble);
       vh.title=trouble ? ("Update-check lukt niet: "+r.error) : "Versie & updates";
     }
+    const dots=[$("#hdrUpdDot"), $("#menuUpdDot")];
     if(r && r.update_available){
-      $("#btnUpd").hidden=false;
-      const md=$("#menuUpdDot"); if(md) md.hidden=false;
+      dots.forEach(x=>{ if(x) x.hidden=false; });   // bolletje aan: er staat iets klaar
       if(!window._updPopShown){
         window._updPopShown=true;
         $("#updPopText").textContent="Versie v"+(r.latest||"?")+" staat klaar."+(r.notes? " "+String(r.notes).split("\n")[0] : "");
         openOv("#ovUpdPop");
         try{ Sound.coffee(); }catch(_){}
       }
+    } else if(r){
+      dots.forEach(x=>{ if(x) x.hidden=true; });
     }
   }catch(_){}
 }
@@ -1177,12 +1179,14 @@ async function doUpdCheck(){
   if(!r.reachable){ body.innerHTML='<div class="empty">Kon de updateserver niet bereiken.</div>'; return; }
   let html='<div class="vrow"><span>Jouw versie</span><b>v'+r.current+'</b></div>'+
            '<div class="vrow"><span>Beschikbaar</span><b>v'+(r.latest||"?")+'</b></div>';
+  const dots=[$("#hdrUpdDot"), $("#menuUpdDot")];
   if(r.update_available){
-    $("#btnUpd").hidden=false; $("#btnUpdApply").hidden=false;
+    dots.forEach(x=>{ if(x) x.hidden=false; });
+    $("#btnUpdApply").hidden=false;
     html+='<div class="updnotes"></div>'; body.innerHTML=html;
     body.querySelector(".updnotes").textContent = r.notes || "Nieuwe versie beschikbaar.";
   } else {
-    $("#btnUpd").hidden=true;
+    dots.forEach(x=>{ if(x) x.hidden=true; });
     html+='<div class="updnotes">Je hebt de nieuwste versie. Niets te doen.</div>'; body.innerHTML=html;
   }
 }
