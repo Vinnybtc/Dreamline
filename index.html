@@ -94,6 +94,9 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 .menubtn{display:none}
 .golive{appearance:none;border:0;background:var(--bt);color:#1a120b;font:inherit;font-size:11.5px;
   font-weight:700;border-radius:999px;padding:3px 10px;cursor:pointer;white-space:nowrap}
+.reftxt{appearance:none;border:1px solid var(--line);background:transparent;color:var(--muted);
+  font:inherit;font-size:11px;font-weight:600;border-radius:999px;padding:3px 9px;cursor:pointer;white-space:nowrap}
+.reftxt:hover{border-color:var(--bt);color:var(--bt)}
 .golive-mini{position:absolute;right:14px;bottom:36px;z-index:4;appearance:none;border:1px solid var(--line);
   background:var(--surface);color:var(--bt);font:inherit;font-size:12.5px;font-weight:700;border-radius:999px;
   padding:7px 14px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25)}
@@ -338,7 +341,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
     </div>
   </div>
   <div class="chartwrap">
-    <div class="refchip" id="refChip" hidden>Referentie:&nbsp;<b id="refName"></b><button id="refClear" title="Verwijder referentie">×</button></div>
+    <div class="refchip" id="refChip" hidden>Referentie:&nbsp;<b id="refName"></b><button class="reftxt" id="refClear" title="Referentielijn van de grafiek halen">weghalen</button><button id="refHide" title="Verberg dit label — de referentielijn blijft staan">×</button></div>
     <div class="refchip" id="viewChip" hidden>Bekijken:&nbsp;<b id="viewName"></b><button class="golive" id="viewLive" title="Terug naar de live-meting">▶ Live</button><button id="viewHide" title="Verberg dit label — de meting blijft staan">×</button></div>
     <button class="golive-mini" id="goLiveMini" hidden title="Terug naar de live-meting">▶ Live</button>
     <div class="alarmchip" id="coachAlarm" hidden></div>
@@ -394,6 +397,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
     <p class="sub">Tik een roast om die als referentiecurve over de live-grafiek te leggen.</p>
     <div class="improw">
       <button class="tool" id="btnImport">+ Artisan-bestand (.alog) importeren</button>
+      <button class="tool" id="refClearHist" hidden>Referentie weghalen</button>
       <span class="hint" id="impHint" style="display:inline;margin:0"></span>
     </div>
     <input type="file" id="impFile" accept=".alog" multiple hidden>
@@ -571,7 +575,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.9.2";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -878,6 +882,7 @@ async function loadReference(id){
   state.ref={samples:r.samples||[], events:r.events||{}, title:r.title||"Roast"};
   state.refId=id;
   $("#refName").textContent=state.ref.title; $("#refChip").hidden=false;
+  const h=$("#refClearHist"); if(h) h.hidden=false;
 }
 async function setReference(id){
   try{
@@ -888,10 +893,12 @@ async function setReference(id){
 }
 function clearReference(){
   state.ref=null; state.refId=null; $("#refChip").hidden=true;
+  const h=$("#refClearHist"); if(h) h.hidden=true;
   if(state.mode==="live") fetch("/api/ref",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:null})}).catch(()=>{});
 }
 function syncReference(id){          // door de server gepusht (gekozen op een ander scherm)
-  if(id==null){ if(state.refId!=null){ state.ref=null; state.refId=null; $("#refChip").hidden=true; } return; }
+  if(id==null){ if(state.refId!=null){ state.ref=null; state.refId=null; $("#refChip").hidden=true;
+    const h=$("#refClearHist"); if(h) h.hidden=true; } return; }
   if(id!==state.refId) loadReference(id).catch(()=>{});
 }
 
@@ -1250,7 +1257,9 @@ $("#btnHist").onclick=openHist;
 $("#btnSave").onclick=openSave;
 $("#btnPair").onclick=openQr;
 $("#fSave").onclick=doSave;
-$("#refClear").onclick=clearReference;
+$("#refClear").onclick=clearReference;        // 'weghalen' = referentielijn echt weg (op alle schermen)
+$("#refHide").onclick=()=>{ $("#refChip").hidden=true; };   // × = alleen het ballonnetje weg; lijn blijft
+$("#refClearHist").onclick=()=>{ clearReference(); };
 $("#viewLive").onclick=exitView;              // ▶ Live = terug naar de live-meting
 $("#goLiveMini").onclick=exitView;
 $("#viewHide").onclick=()=>{                  // × = alleen het ballonnetje weg; meting blijft

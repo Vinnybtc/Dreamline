@@ -1,14 +1,14 @@
 {
-  "version": "1.9.1",
-  "notes": "Nieuw in 1.9.1:\n- Nieuwe knop 'Updates' bovenin: altijd zichtbaar, één tik om te controleren en te installeren. Een oranje bolletje verschijnt zodra er iets klaarstaat.\n- Volledig ingericht voor de telefoon: temperaturen, stijgsnelheid, fasen, grafiek en knoppen staan op één scherm, zonder scrollen. De overige acties vind je onder ☰ Menu.\n- Je keuzes worden onthouden: °C/°F, donker/licht en de coach-instellingen staan bij het opnieuw openen weer zoals je ze had.\n- Het versienummer staat nu altijd in beeld (rechtsboven); ook daarop tikken opent het updatescherm.\n- Oude roast bekijken: het label is nu weg te klikken zónder dat de meting verdwijnt. Terug naar live gaat met de knop '▶ Live'.\n- Koppelscherm verbeterd: duidelijke wifi-tip, slimmere adreskeuze en extra adressen als de laptop op meerdere netwerken zit.\n- Updates ophalen werkt betrouwbaarder, ook op netwerken die één van de downloadadressen blokkeren.",
+  "version": "1.9.2",
+  "notes": "Nieuw in 1.9.2:\n- Het 'Referentie'-label boven de grafiek is nu weg te klikken met × zónder dat de referentielijn verdwijnt. De lijn blijft gewoon staan, ook op de iPad.\n- Referentie écht weghalen doe je bewust: met de knop 'weghalen' op het label, of via Historie → 'Referentie weghalen'.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "2e85b0a8edbc554b7e0b41edf276d18693d095790dcb90547293506a59cf062f",
-    "dreamline.py": "d8ef4645d8c988deafaaad1b32e2c02f9e1dd7f3f3e82867818a1daacf2b946d",
+    "index.html": "dcaeca2778ba3118f92478fe08036fb4ddbcdcf77358c66ad1273c4ab6ed9602",
+    "dreamline.py": "b8b867aea57b9a28097615c6074806a136731cc1548b07c8412a3b6f894a1f16",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }
