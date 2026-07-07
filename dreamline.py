@@ -31,8 +31,15 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
+# Ingebouwde update-adressen: werkt ook als update_config.json ontbreekt of leeg is.
+# Meerdere hosts: sommige (winkel)netwerken blokkeren raw.githubusercontent.com;
+# dan pakt Dreamline vanzelf de spiegel op jsDelivr. Eigen manifest_url gaat vóór.
+DEFAULT_MANIFEST_URLS = (
+    "https://raw.githubusercontent.com/Vinnybtc/Dreamline/main/manifest.json",
+    "https://cdn.jsdelivr.net/gh/Vinnybtc/Dreamline@main/manifest.json",
+)
 # Standaard-bestemming voor opmerkingen + update-meldingen. Publiek relay-endpoint
 # (geen secret): de winkel-pc stuurt hier automatisch naartoe, zonder dat iemand iets
 # hoeft in te stellen. Het relay e-mailt het door naar de maker. Een eigen 'feedback_url'
@@ -83,6 +90,7 @@ class State:
         self._tp_first = None            # eerste BT na CHARGE (om een echte dip te herkennen)
         self.remote = 0                  # aantal verbonden iPads/telefoons (niet-localhost)
         self.ref_id = None               # gedeeld referentieprofiel (roast-id) voor álle schermen
+        self.last_seen_local_ip = None   # laptop-IP waarover een iPad/telefoon ons écht bereikte
 
     # ---- abonnees ----
     def subscribe(self):
@@ -785,6 +793,19 @@ def _manifest_url():
         pass
     return None
 
+def _manifest_candidates():
+    """Alle update-adressen, in volgorde: eigen instelling eerst, dan de ingebouwde.
+    Zo werkt updaten ook zonder (of met een kapotte) update_config.json, en op
+    netwerken die één van de hosts blokkeren."""
+    out = []
+    u = _manifest_url()
+    if u:
+        out.append(u)
+    for d in DEFAULT_MANIFEST_URLS:
+        if d not in out:
+            out.append(d)
+    return out
+
 def _feedback_url():
     try:
         if CONFIG_PATH.exists():
@@ -889,35 +910,42 @@ def _fetch(u, cap):
             raise ValueError("redirect naar niet-toegestane URL: %s" % final)
         return r.read(cap + 1)
 
+def _fetch_manifest():
+    """Probeer alle update-adressen tot er één werkt. Geeft (manifest, url, fouten)."""
+    errors = []
+    for u in _manifest_candidates():
+        if not _url_allowed(u):
+            errors.append("%s: niet toegestaan (gebruik https)" % u)
+            continue
+        try:
+            m = json.loads(_fetch(_cb(u), 256 * 1024).decode("utf-8", "replace"))
+            if not isinstance(m, dict):
+                raise ValueError("manifest is geen JSON-object")
+            return m, u, errors
+        except Exception as e:
+            errors.append("%s: %s" % (u.split("/")[2], e))
+    return None, None, errors
+
 def check_update():
-    out = {"configured": False, "reachable": False, "current": VERSION,
-           "latest": None, "update_available": False, "notes": "", "error": ""}
-    u = _manifest_url()
-    if not u:
+    out = {"configured": True, "reachable": False, "current": VERSION,
+           "latest": None, "update_available": False, "notes": "", "error": "", "source": ""}
+    m, u, errors = _fetch_manifest()
+    if m is None:
+        out["error"] = " | ".join(errors) or "geen verbinding"
         return out
-    out["configured"] = True
-    if not _url_allowed(u):
-        out["error"] = "manifest-URL niet toegestaan (gebruik https)"; return out
-    try:
-        m = json.loads(_fetch(_cb(u), 256 * 1024).decode("utf-8", "replace"))
-        out["reachable"] = True
-        out["latest"] = str(m.get("version", ""))
-        out["notes"] = str(m.get("notes", ""))
-        out["update_available"] = _ver_tuple(out["latest"]) > _ver_tuple(VERSION)
-    except Exception as e:
-        out["error"] = str(e)
+    out["reachable"] = True
+    out["source"] = u
+    out["latest"] = str(m.get("version", ""))
+    out["notes"] = str(m.get("notes", ""))
+    out["update_available"] = _ver_tuple(out["latest"]) > _ver_tuple(VERSION)
     return out
 
 def apply_update():
     """Download nieuwe versie, valideer, maak back-up, schrijf. Niets-of-alles."""
-    u = _manifest_url()
-    if not u or not _url_allowed(u):
-        return {"ok": False, "error": "updates niet (juist) ingesteld"}
+    m, u, errors = _fetch_manifest()
+    if m is None:
+        return {"ok": False, "error": "manifest niet leesbaar: %s" % (" | ".join(errors) or "geen verbinding")}
     base = u.rsplit("/", 1)[0]
-    try:
-        m = json.loads(_fetch(_cb(u), 256 * 1024).decode("utf-8", "replace"))
-    except Exception as e:
-        return {"ok": False, "error": "manifest niet leesbaar: %s" % e}
     latest = str(m.get("version", ""))
     files = [f for f in (m.get("files") or []) if f in UPDATABLE]
     if not files:
@@ -1021,6 +1049,19 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.client_address[0] if self.client_address else "") or ""
         return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
 
+    def _remember_local_ip(self):
+        """Verzoek van een iPad/telefoon? Onthoud via welk laptop-IP dat binnenkwam:
+        dat is gegarandeerd het adres dat op het (winkel)wifi werkt — de QR-code
+        en het koppel-adres gebruiken dat voortaan."""
+        try:
+            if not self._local():
+                ip = self.connection.getsockname()[0]
+                if ip and not ip.startswith("127."):
+                    with STATE.lock:
+                        STATE.last_seen_local_ip = ip
+        except Exception:
+            pass
+
     def _host_ok(self):
         """Weer DNS-rebinding af: de app wordt altijd via een IP-adres of localhost
         geopend. Een verzoek met een (kwaadaardige) domeinnaam in de Host-header
@@ -1057,6 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self._host_ok():
                 return self._send(403, "text/plain", b"forbidden")
+            self._remember_local_ip()
             path = self.path.split("?")[0]
             if path in ("/", "/index.html", "/index.htm"):
                 try:
@@ -1068,8 +1110,14 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/events":
                 self._sse()
             elif path == "/info":
+                port = self.server.server_address[1]
+                urls = ["http://%s:%d" % (ip, port) for ip in _local_ipv4s()]
+                main_url = self._url()
+                if main_url in urls:
+                    urls.remove(main_url)
                 self._send(200, "application/json", json.dumps({
-                    "url": self._url(), "feedback_url": _feedback_url() or "",
+                    "url": main_url, "alt_urls": urls,
+                    "feedback_url": _feedback_url() or "",
                     "is_laptop": self._local(),
                     "ever_paired": _ever_paired(),
                     "remote_connected": STATE.remote > 0}).encode())
@@ -1170,6 +1218,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not self._host_ok() or not self._origin_ok():
                 return self._send(403, "application/json", b'{"ok":false,"error":"verboden"}')
+            self._remember_local_ip()
             try:
                 n = int(self.headers.get("Content-Length", 0) or 0)
             except ValueError:
@@ -1301,13 +1350,49 @@ class Handler(BaseHTTPRequestHandler):
             except Exception: pass
 
 
-def lan_ip():
+def _local_ipv4s():
+    """Alle IPv4-adressen van deze laptop, meest waarschijnlijke wifi-adres eerst.
+    (Een laptop met kabel + wifi of een VPN heeft er meerdere; de QR moet het
+    adres tonen dat de iPad/telefoon ook echt kan bereiken.)"""
+    ips = []
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
-        return ip
+        s.connect(("8.8.8.8", 80)); ips.append(s.getsockname()[0]); s.close()
     except Exception:
-        return "127.0.0.1"
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.append(info[4][0])
+    except Exception:
+        pass
+    def ok(ip):
+        return not (ip.startswith("127.") or ip.startswith("169.254."))
+    def rank(ip):
+        if ip.startswith("192.168."): return 0     # vrijwel altijd het (winkel)wifi
+        if ip.startswith("10."): return 1
+        parts = ip.split(".")
+        if parts[0] == "172":
+            try:
+                if 16 <= int(parts[1]) <= 31: return 2
+            except ValueError:
+                pass
+        return 3                                    # publiek/VPN: minst waarschijnlijk
+    seen, out = set(), []
+    for ip in ips:
+        if ok(ip) and ip not in seen:
+            seen.add(ip); out.append(ip)
+    out.sort(key=rank)
+    return out
+
+
+def lan_ip():
+    # Heeft een iPad/telefoon ons al eens bereikt? Dan is dát bewezen het juiste adres.
+    with STATE.lock:
+        seen = STATE.last_seen_local_ip
+    if seen:
+        return seen
+    ips = _local_ipv4s()
+    return ips[0] if ips else "127.0.0.1"
 
 
 def main():
@@ -1335,8 +1420,7 @@ def main():
         print("Dreamline %s" % VERSION); return
     if args.check_update:
         r = check_update()
-        if not r["configured"]: print("Updates zijn nog niet ingesteld (update_config.json ontbreekt).")
-        elif not r["reachable"]: print("Kon niet controleren:", r.get("error") or "geen verbinding")
+        if not r["reachable"]: print("Kon niet controleren:", r.get("error") or "geen verbinding")
         elif r["update_available"]: print("Nieuwe versie beschikbaar: %s (jij hebt %s)" % (r["latest"], r["current"]))
         else: print("Je hebt de nieuwste versie (%s)." % r["current"])
         return

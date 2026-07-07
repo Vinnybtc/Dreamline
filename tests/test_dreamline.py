@@ -106,11 +106,46 @@ def test_feedback_url_falls_back_to_default():
     assert d.DEFAULT_FEEDBACK_URL.startswith("https://")
 
 
-def test_check_update_unconfigured(monkeypatch):
+def test_manifest_candidates_config_first_then_defaults(monkeypatch):
+    monkeypatch.setattr(d, "_manifest_url", lambda: "https://eigen.test/manifest.json")
+    c = d._manifest_candidates()
+    assert c[0] == "https://eigen.test/manifest.json"
+    for u in d.DEFAULT_MANIFEST_URLS:
+        assert u in c, "ingebouwde fallback ontbreekt: %s" % u
+
+
+def test_manifest_candidates_without_config_uses_defaults(monkeypatch):
     monkeypatch.setattr(d, "_manifest_url", lambda: None)
+    assert d._manifest_candidates() == list(d.DEFAULT_MANIFEST_URLS)
+
+
+def test_check_update_falls_back_to_mirror(monkeypatch):
+    # eerste host (raw.github) faalt -> de spiegel (jsdelivr) moet het overnemen
+    monkeypatch.setattr(d, "_manifest_url", lambda: None)
+
+    def fake_fetch(u, cap):
+        if "raw.githubusercontent" in u:
+            raise OSError("geblokkeerd door netwerk")
+        return json.dumps({"version": "99.0.0", "notes": "x", "files": []}).encode()
+
+    monkeypatch.setattr(d, "_fetch", fake_fetch)
     r = d.check_update()
-    assert r["configured"] is False
+    assert r["reachable"] is True
+    assert r["update_available"] is True
+    assert "jsdelivr" in r["source"]
+
+
+def test_check_update_reports_error_when_all_hosts_fail(monkeypatch):
+    monkeypatch.setattr(d, "_manifest_url", lambda: None)
+
+    def boom(u, cap):
+        raise OSError("geen verbinding")
+
+    monkeypatch.setattr(d, "_fetch", boom)
+    r = d.check_update()
+    assert r["reachable"] is False
     assert r["update_available"] is False
+    assert r["error"]
 
 
 # --------------------------------------------------------------------------
@@ -266,6 +301,34 @@ def test_apply_update_rejects_bad_hash(monkeypatch, tmp_path):
     monkeypatch.setattr(d, "_fetch", fake_fetch)
     r = d.apply_update()
     assert r["ok"] is False and "controlegetal" in r["error"]
+
+
+# --------------------------------------------------------------------------
+# QR / koppel-adres (1.9.0): juiste laptop-IP kiezen
+# --------------------------------------------------------------------------
+def test_local_ipv4s_prefers_wifi_ranges(monkeypatch):
+    fake = ["203.0.113.9", "10.8.0.3", "192.168.1.23", "169.254.7.7", "127.0.0.1"]
+
+    class FakeSock:
+        def connect(self, *a): pass
+        def getsockname(self): return ("203.0.113.9", 0)
+        def close(self): pass
+
+    monkeypatch.setattr(d.socket, "socket", lambda *a, **k: FakeSock())
+    monkeypatch.setattr(d.socket, "getaddrinfo",
+                        lambda *a, **k: [(None, None, None, None, (ip, 0)) for ip in fake])
+    ips = d._local_ipv4s()
+    assert ips[0] == "192.168.1.23", "192.168.x hoort voorop (winkel-wifi)"
+    assert "127.0.0.1" not in ips and "169.254.7.7" not in ips
+
+
+def test_lan_ip_prefers_address_remote_devices_actually_used():
+    old = d.STATE.last_seen_local_ip
+    try:
+        d.STATE.last_seen_local_ip = "192.168.5.50"
+        assert d.lan_ip() == "192.168.5.50"
+    finally:
+        d.STATE.last_seen_local_ip = old
 
 
 def test_fetch_rejects_https_to_http_redirect(monkeypatch):

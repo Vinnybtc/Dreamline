@@ -1,14 +1,14 @@
 {
-  "version": "1.8.0",
-  "notes": "Nieuw in 1.8.0:\n- De temperatuurlijn is nu mooi vloeiend: de meting wordt vaker uitgelezen en slim gladgestreken, zonder vertraging.\n- Referentieprofiel wordt gedeeld: kies je op de laptop óf de iPad een referentie, dan zie je die meteen op allebei de schermen. Weghalen werkt ook op allebei tegelijk.\n- Verder een flinke onderhoudsbeurt onder de motorkap voor extra stabiliteit en veiligheid.",
+  "version": "1.9.0",
+  "notes": "Nieuw in 1.9.0:\n- Volledig ingericht voor de telefoon: temperaturen, stijgsnelheid, fasen, grafiek en knoppen staan op één scherm, zonder scrollen. De overige acties vind je onder ☰ Menu.\n- Je keuzes worden onthouden: °C/°F, donker/licht en de coach-instellingen staan bij het opnieuw openen weer zoals je ze had.\n- Het versienummer staat nu altijd in beeld (rechtsboven); tik erop om updates te bekijken of op te halen.\n- Oude roast bekijken: het label is nu weg te klikken zónder dat de meting verdwijnt. Terug naar live gaat met de knop '▶ Live'.\n- Koppelscherm verbeterd: duidelijke wifi-tip, slimmere adreskeuze en extra adressen als de laptop op meerdere netwerken zit.\n- Updates ophalen werkt betrouwbaarder, ook op netwerken die één van de downloadadressen blokkeren.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "1bbe21ca8a99687f57efad8897352a951ee555b78f05029e09d7b6eede5415d7",
-    "dreamline.py": "78e134b15a61aeaf886ddab851e6f8297027909d5af759bcfdda922259c053ea",
+    "index.html": "764ee603bb0cf3c1520b76c96618d4def409afdc0c36d6ae9d5caff0ca3184c9",
+    "dreamline.py": "668b1388e122c5548533274e5e1953075bd09880bc48ca69364435dc572faff9",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }
