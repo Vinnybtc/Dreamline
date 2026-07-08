@@ -132,6 +132,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 .refchip b{color:var(--gold);font-weight:600}
 .refchip button{appearance:none;border:0;background:var(--surface-2);color:var(--text);
   width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1}
+.refchip button.reftxt,.refchip button.golive{width:auto;height:auto;border-radius:999px}
 
 .overlay{position:fixed;inset:0;background:rgba(8,6,4,.55);
   display:flex;align-items:center;justify-content:center;z-index:20;padding:20px}
@@ -228,6 +229,13 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 .updbox .vrow b{font-weight:600}
 .updnotes{white-space:pre-wrap;font-size:13px;line-height:1.5;color:var(--muted);margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
 .verlink{appearance:none;border:0;background:transparent;color:var(--gold);cursor:pointer;font:inherit;padding:0;text-decoration:underline}
+
+/* ---- tablet/iPad: de losse kopregel-knoppen passen daar niet ----
+   alles klapt in naar ☰ Menu; de rest van de layout blijft zoals op de laptop */
+@media (max-width:1366px){
+  .controls .seg, .controls .tool{display:none}
+  .controls .menubtn{display:inline-block}
+}
 
 /* ---- telefoon: alles belangrijks in één scherm, zonder scrollen ----
    (staat bewust als állerlaatste, zodat deze regels altijd winnen) */
@@ -575,7 +583,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.9.2";
+const APP_VERSION = "1.9.3";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -759,9 +767,11 @@ function draw(){
   ctx.fillStyle=css('--ror'); ctx.textAlign='left';
   const rStep = state.unit==="F"?18:10;
   for(let v=0; v<=rorHi; v+=rStep){ ctx.fillText(v, W-PAD.r+8, Yr(v)); }
-  // time axis
+  // time axis — stap groeit mee zodat labels elkaar nooit overlappen (telefoon/lange roasts)
   ctx.fillStyle=css('--muted'); ctx.textAlign='center';
-  for(let s=0; s<=tMax; s+=60){ const x=X(s); ctx.fillText(fmtTime(s), x, H-PAD.b+12); }
+  let tickStep=60;
+  for(const s of [60,120,300,600,1200]){ if(plotW/(tMax/s)>=52){ tickStep=s; break; } tickStep=s; }
+  for(let s=0; s<=tMax; s+=tickStep){ const x=X(s); ctx.fillText(fmtTime(s), x, H-PAD.b+12); }
   // zero baseline (charge)
   if(state.events.CHARGE!=null){ ctx.strokeStyle=css('--line'); ctx.setLineDash([3,4]);
     ctx.beginPath(); ctx.moveTo(X(0),PAD.t); ctx.lineTo(X(0),PAD.t+plotH); ctx.stroke(); ctx.setLineDash([]); }
@@ -806,13 +816,16 @@ function draw(){
     ctx.fillStyle=css('--bt'); ctx.shadowColor=css('--bt-glow'); ctx.shadowBlur=14;
     ctx.beginPath(); ctx.arc(x,y,4.5,0,7); ctx.fill(); ctx.shadowBlur=0;
   }
-  // event markers
+  // event markers — labels wisselen van regel als ze elkaar raken (korte roast / smal scherm)
   ctx.font='10px Inter,system-ui'; ctx.textAlign='center';
-  for(const [type,t] of Object.entries(state.events)){
-    if(type==="CHARGE"||!(type in EV_LABEL)) continue;
+  let lastEvX=-1e9, evRow=0;
+  const evs=Object.entries(state.events).filter(([k])=>k!=="CHARGE"&&(k in EV_LABEL)).sort((a,b)=>a[1]-b[1]);
+  for(const [type,t] of evs){
     const x=X(t); ctx.strokeStyle=css('--line'); ctx.setLineDash([2,3]);
     ctx.beginPath(); ctx.moveTo(x,PAD.t); ctx.lineTo(x,PAD.t+plotH); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle=css('--text'); ctx.fillText(EV_LABEL[type], x, PAD.t+8);
+    evRow = (x-lastEvX<34) ? (evRow+1)%2 : 0;
+    ctx.fillStyle=css('--text'); ctx.fillText(EV_LABEL[type], x, PAD.t+8+evRow*11);
+    lastEvX=x;
   }
   // readouts
   $("#clock").textContent = fmtTime(state.t - (state.events.CHARGE!=null?0:0));
