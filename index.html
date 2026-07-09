@@ -583,7 +583,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.9.4";
+const APP_VERSION = "1.9.5";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -739,10 +739,10 @@ function draw(){
   let tMin = -20;
   let tempC=[]; S.forEach(s=>{tempC.push(s.bt,s.et);});
   if(state.ref && state.ref.samples) state.ref.samples.forEach(s=>tempC.push(s.bt,s.et));
-  let tHi = cToDisp(state.unit==="F"?230:Math.max(220, tempC.length?Math.max(...tempC)+12:220));
-  let tLo = cToDisp(state.unit==="F"?60:60);
-  if(state.unit==="C"){ tHi=Math.max(220, tempC.length?Math.max(...tempC)+12:220); tLo=60; }
-  else { const cf=tempC.map(cToDisp); tHi=Math.max(430, cf.length?Math.max(...cf)+20:430); tLo=140; }
+  // temperatuurschaal vanaf 0 (klantwens): 0-220 °C i.p.v. 60-220
+  let tHi, tLo;
+  if(state.unit==="C"){ tHi=Math.max(220, tempC.length?Math.max(...tempC)+12:220); tLo=0; }
+  else { const cf=tempC.map(cToDisp); tHi=Math.max(430, cf.length?Math.max(...cf)+20:430); tLo=32; }
   let rorHi = state.unit==="F"? 72 : 40;
   const X = t => PAD.l + (t - tMin)/(tMax - tMin)*plotW;
   const Yt = v => PAD.t + (1-(v - tLo)/(tHi - tLo))*plotH;

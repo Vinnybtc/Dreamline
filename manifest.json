@@ -1,14 +1,14 @@
 {
-  "version": "1.9.4",
-  "notes": "Nieuw in 1.9.4:\n- Opmerkingen en meldingen die door een storing bij de maildienst niet aankwamen, worden nu automatisch opnieuw verstuurd zodra de verbinding er weer is. Er gaat dus nooit meer iets verloren; je hoeft zelf niets te doen.\n- Ook eerdere opmerkingen die nog niet waren aangekomen, worden na deze update alsnog automatisch nagestuurd.",
+  "version": "1.9.5",
+  "notes": "Nieuw in 1.9.5:\n- De temperatuurschaal van de grafiek begint nu bij 0 in plaats van 60, zoals gevraagd. Zo zie je de hele curve in verhouding tot het nulpunt.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "3e1162b488cd3701c4e94fcd9d8a2e2f77b8046ca5e443c2764b94196fdac084",
-    "dreamline.py": "5f7c0eab44a71a1e66100c2bb756b63b75879b511e5581143c88645973d4cc8f",
+    "index.html": "6860f84e6ba39e7f71fc142a6d3683c14fb00ea1318b2ab9605f25cb659b859a",
+    "dreamline.py": "ea7bb3d5f0253e600cec5cae6fd0e33aa3f0a41664cbbbd3c8dce9edadcb8dca",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }
