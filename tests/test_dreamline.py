@@ -304,6 +304,59 @@ def test_apply_update_rejects_bad_hash(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Storing-herstel (1.9.4): relay-antwoord lezen + niet-aangekomen items opnieuw
+# --------------------------------------------------------------------------
+class _BodyResp:
+    def __init__(self, body): self._b = body
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def read(self, n=0): return self._b
+
+
+@pytest.mark.parametrize("body,expected", [
+    (b'{"ok":true,"stored":true,"forwarded":true,"status":200}', True),
+    (b'{"ok":true,"stored":true,"forwarded":false,"status":522}', True),   # opgeslagen = veilig
+    (b'{"ok":false,"stored":false,"forwarded":false,"status":522}', False),  # mail-dienst plat, niets bewaard
+    (b'niet-json antwoord', True),                                          # eigen webhook: 2xx volstaat
+])
+def test_forward_feedback_reads_relay_body(monkeypatch, body, expected):
+    monkeypatch.setattr(d, "_feedback_url", lambda: "https://relay.test/fn")
+    monkeypatch.setattr(d.urllib.request, "urlopen", lambda req, timeout=0: _BodyResp(body))
+    assert d.forward_feedback({"text": "hi", "ts": "t"}) is expected
+
+
+def test_retry_unforwarded_resends_and_marks(monkeypatch, tmp_path):
+    fb = tmp_path / "feedback.json"
+    ul = tmp_path / "update_log.json"
+    fb.write_text(json.dumps([
+        {"ts": "1", "text": "al aangekomen", "fwd": True},
+        {"ts": "2", "text": "nog niet aangekomen"},
+        {"ts": "3", "text": "ook niet", "fwd": False},
+    ]), encoding="utf-8")
+    ul.write_text(json.dumps([{"ts": "4", "text": "update-melding", "fwd": False}]), encoding="utf-8")
+    monkeypatch.setattr(d, "FEEDBACK_PATH", fb)
+    monkeypatch.setattr(d, "UPDATE_LOG", ul)
+    sent = []
+    monkeypatch.setattr(d, "forward_feedback", lambda rec: (sent.append(rec["ts"]), True)[1])
+    n = d.retry_unforwarded()
+    assert n == 3 and sent == ["2", "3", "4"]
+    assert all(r.get("fwd") is True for r in json.loads(fb.read_text(encoding="utf-8")))
+    assert json.loads(ul.read_text(encoding="utf-8"))[0]["fwd"] is True
+
+
+def test_retry_unforwarded_stops_after_two_failures(monkeypatch, tmp_path):
+    fb = tmp_path / "feedback.json"
+    fb.write_text(json.dumps([{"ts": str(i), "text": "x%d" % i} for i in range(5)]), encoding="utf-8")
+    monkeypatch.setattr(d, "FEEDBACK_PATH", fb)
+    monkeypatch.setattr(d, "UPDATE_LOG", tmp_path / "geen.json")
+    attempts = []
+    monkeypatch.setattr(d, "forward_feedback", lambda rec: (attempts.append(1), False)[1])
+    d.retry_unforwarded()
+    assert len(attempts) == 2, "na 2 mislukkingen stoppen (storing), niet alles afwerken"
+    assert all(r.get("fwd") is not True for r in json.loads(fb.read_text(encoding="utf-8")))
+
+
+# --------------------------------------------------------------------------
 # QR / koppel-adres (1.9.0): juiste laptop-IP kiezen
 # --------------------------------------------------------------------------
 def test_local_ipv4s_prefers_wifi_ranges(monkeypatch):

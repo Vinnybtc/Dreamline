@@ -31,7 +31,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 # Ingebouwde update-adressen: werkt ook als update_config.json ontbreekt of leeg is.
 # Meerdere hosts: sommige (winkel)netwerken blokkeren raw.githubusercontent.com;
@@ -817,22 +817,42 @@ def _feedback_url():
 
 FEEDBACK_PATH = HERE / "feedback.json"
 
-def save_feedback(rec):
-    """Bewaar een opmerking lokaal (veilig; gaat nooit verloren)."""
+def _load_list(path):
     try:
-        data = []
-        if FEEDBACK_PATH.exists():
-            try: data = json.loads(FEEDBACK_PATH.read_text(encoding="utf-8")) or []
-            except Exception: data = []
-        data.append(rec)
-        FEEDBACK_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        d = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+def _save_list(path, data):
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         return True
     except Exception:
         return False
 
+def save_feedback(rec):
+    """Bewaar een opmerking lokaal (veilig; gaat nooit verloren)."""
+    data = _load_list(FEEDBACK_PATH)
+    data.append(rec)
+    return _save_list(FEEDBACK_PATH, data)
+
+def _mark_forwarded(path, rec):
+    """Zet 'fwd': true op het bewaarde item zodra het aantoonbaar is aangekomen."""
+    data = _load_list(path)
+    for r in reversed(data):
+        if isinstance(r, dict) and r.get("ts") == rec.get("ts") and r.get("text") == rec.get("text"):
+            r["fwd"] = True
+            _save_list(path, data)
+            return True
+    return False
+
 def forward_feedback(rec):
-    """Stuur de opmerking door naar de (eigen) webhook in feedback_url, indien ingesteld.
-    Alleen https (of localhost). Mislukken is ok: de lokale kopie blijft bewaard."""
+    """Stuur de opmerking door naar de webhook. Alleen https (of localhost).
+    Mislukken is ok: de lokale kopie blijft bewaard en wordt later opnieuw geprobeerd.
+    BELANGRIJK: het relay antwoordt met HTTP 200 óók als de mail-dienst plat ligt;
+    daarom kijken we in het antwoord zelf ('stored'/'forwarded'/'ok') of het bericht
+    echt veilig is aangekomen."""
     u = _feedback_url()
     if not u or not (u.startswith("https://") or u.startswith("http://localhost")):
         return False
@@ -841,31 +861,68 @@ def forward_feedback(rec):
         req = urllib.request.Request(u, data=body, method="POST",
                                      headers={"Content-Type": "application/json",
                                               "User-Agent": "Dreamline/%s" % VERSION})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            r.read(2048)
-        return True
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read(4096)
+        try:
+            resp = json.loads(raw.decode("utf-8", "replace"))
+            if isinstance(resp, dict) and ("stored" in resp or "forwarded" in resp or "ok" in resp):
+                return bool(resp.get("stored") or resp.get("forwarded") or resp.get("ok"))
+        except Exception:
+            pass
+        return True   # eigen webhook zonder JSON-status: een 2xx-antwoord volstaat
     except Exception:
         return False
 
+def retry_unforwarded(max_send=20):
+    """Verstuur lokaal bewaarde items die nog niet (aantoonbaar) zijn aangekomen alsnog.
+    Draait bij het opstarten en daarna elk uur: na een storing bij de mail-dienst
+    komt alles dus vanzelf alsnog binnen, zonder dat iemand iets hoeft te doen."""
+    sent = 0
+    fails = 0
+    for path in (FEEDBACK_PATH, UPDATE_LOG):
+        data = _load_list(path)
+        changed = False
+        for rec in data:
+            if not isinstance(rec, dict) or rec.get("fwd") is True or not rec.get("text"):
+                continue
+            if sent >= max_send or fails >= 2:
+                break
+            sent += 1
+            if forward_feedback(rec):
+                rec["fwd"] = True
+                changed = True
+                fails = 0
+            else:
+                fails += 1   # relay/mail ligt er waarschijnlijk uit; volgende ronde opnieuw
+        if changed:
+            _save_list(path, data)
+    return sent
+
+def _retry_loop():
+    time.sleep(25)              # eerst rustig laten opstarten
+    while True:
+        try:
+            retry_unforwarded()
+        except Exception:
+            pass
+        time.sleep(3600)
+
 def log_and_notify_update(to_ver):
     """Bij een geslaagde update: lokaal loggen én actief een seintje naar Vincent sturen
-    (via dezelfde veilige webhook als de opmerkingen). Mislukken mag, het logboek blijft."""
+    (via dezelfde veilige webhook als de opmerkingen). Mislukt het versturen, dan
+    probeert de retry-lus het later vanzelf opnieuw."""
     host = socket.gethostname()
     rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
            "type": "update", "from": VERSION, "to": to_ver, "host": host,
            "version": to_ver, "name": "UPDATE · %s" % host,
-           "text": "Dreamline is op '%s' bijgewerkt naar v%s." % (host, to_ver)}
+           "text": "Dreamline is op '%s' bijgewerkt naar v%s." % (host, to_ver),
+           "fwd": False}
+    data = _load_list(UPDATE_LOG)
+    data.append(rec)
+    _save_list(UPDATE_LOG, data)
     try:
-        data = []
-        if UPDATE_LOG.exists():
-            try: data = json.loads(UPDATE_LOG.read_text(encoding="utf-8")) or []
-            except Exception: data = []
-        data.append(rec)
-        UPDATE_LOG.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    except Exception:
-        pass
-    try:
-        forward_feedback(rec)     # zelfde privé-webhook -> komt in jouw Google Sheet
+        if forward_feedback(rec):
+            _mark_forwarded(UPDATE_LOG, rec)
     except Exception:
         pass
 
@@ -1300,9 +1357,12 @@ class Handler(BaseHTTPRequestHandler):
                 rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
                        "version": VERSION,
                        "name": str(data.get("name", ""))[:80],
-                       "text": text[:4000]}
+                       "text": text[:4000],
+                       "fwd": False}
                 save_feedback(rec)
                 fwd = forward_feedback(rec)
+                if fwd:
+                    _mark_forwarded(FEEDBACK_PATH, rec)
                 self._send(200, "application/json", json.dumps({"ok": True, "forwarded": fwd}).encode())
             elif self.path == "/api/swap":
                 CAL["swap"] = not CAL["swap"]
@@ -1456,6 +1516,8 @@ def main():
 
     target = sim_loop if args.sim else (lambda: sensor_loop(args.bt_ch, args.et_ch, args.tc, rtd=not args.thermocouple))
     threading.Thread(target=target, daemon=True).start()
+    # niet-aangekomen opmerkingen/meldingen automatisch opnieuw versturen (na storingen)
+    threading.Thread(target=_retry_loop, daemon=True).start()
 
     try:
         srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)

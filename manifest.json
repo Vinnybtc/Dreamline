@@ -1,14 +1,14 @@
 {
-  "version": "1.9.3",
-  "notes": "Nieuw in 1.9.3:\n- Het 'Referentie'-label is opgeknapt: de knoppen 'weghalen' en × stonden over elkaar heen, nu staan ze netjes naast elkaar.\n- Op de iPad paste de knoppenbalk bovenin niet meer (afgekapte knoppen). Alle acties zitten daar nu, net als op de telefoon, achter de ☰ Menu-knop. Op de laptop blijft alles zoals het was.\n- De tijden onder de grafiek plakten bij lange roasts aan elkaar; de as kiest nu vanzelf ruimere stappen.\n- Mijlpaal-labels (DRY, FCs, DROP) springen naar een tweede regel als ze elkaar raken, zodat ze leesbaar blijven.",
+  "version": "1.9.4",
+  "notes": "Nieuw in 1.9.4:\n- Opmerkingen en meldingen die door een storing bij de maildienst niet aankwamen, worden nu automatisch opnieuw verstuurd zodra de verbinding er weer is. Er gaat dus nooit meer iets verloren; je hoeft zelf niets te doen.\n- Ook eerdere opmerkingen die nog niet waren aangekomen, worden na deze update alsnog automatisch nagestuurd.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "c53264c2cebac748089d979bdc17b60c02324575fa2283702a9c5bee1204030f",
-    "dreamline.py": "e37325a23a102bc85680f30072cf418b52229ff1ceecbdbb0b8211575113d4c3",
+    "index.html": "3e1162b488cd3701c4e94fcd9d8a2e2f77b8046ca5e443c2764b94196fdac084",
+    "dreamline.py": "5f7c0eab44a71a1e66100c2bb756b63b75879b511e5581143c88645973d4cc8f",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }
