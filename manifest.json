@@ -1,14 +1,14 @@
 {
-  "version": "1.9.5",
-  "notes": "Nieuw in 1.9.5:\n- De temperatuurschaal van de grafiek begint nu bij 0 in plaats van 60, zoals gevraagd. Zo zie je de hele curve in verhouding tot het nulpunt.",
+  "version": "1.9.6",
+  "notes": "Nieuw in 1.9.6:\n- Dreamline wordt een echt programmaatje: na deze update verschijnt er vanzelf een 'Dreamline'-icoon op het bureaublad, met het Beans & Dreams-logo.\n- Voortaan is dubbelklikken op dat icoon genoeg. Geen keuzemenu meer: de app start direct, en kiest zelf — chip aangesloten is live meten, geen chip is netjes wachten tot hij erin zit.\n- Eén keer nodig: start Dreamline nu nog op de vertrouwde manier en installeer deze update. Het icoon staat er daarna vanzelf; de oude startmanier heb je dan niet meer nodig.\n- Al je opgeslagen roasts, instellingen en ijking blijven gewoon staan.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "6860f84e6ba39e7f71fc142a6d3683c14fb00ea1318b2ab9605f25cb659b859a",
-    "dreamline.py": "ea7bb3d5f0253e600cec5cae6fd0e33aa3f0a41664cbbbd3c8dce9edadcb8dca",
+    "index.html": "542d27788de298d976eb81260a47db0791f8ed6cb13a5d6a8c141648b654580d",
+    "dreamline.py": "1d04f767d2c4042e65bf3a4ac3ca3e273eaf2c81f1e0c27cfa608eaf8352b0bd",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }

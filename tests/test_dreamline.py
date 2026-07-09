@@ -304,6 +304,60 @@ def test_apply_update_rejects_bad_hash(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Dubbelklik-start (1.9.6): launcher, icoon en snelkoppeling
+# --------------------------------------------------------------------------
+def test_launcher_bat_starts_in_own_dir_with_running_python():
+    txt = d._launcher_bat_text(r"C:\Dreamline\python\python.exe")
+    assert 'cd /d "%~dp0"' in txt, "moet altijd vanuit de app-map starten (data blijft dan werken)"
+    assert r'"C:\Dreamline\python\python.exe" dreamline.py' in txt
+
+
+def _mini_png(w=112, h=112):
+    import struct as st
+    return (b"\x89PNG\r\n\x1a\n" + st.pack(">I", 13) + b"IHDR"
+            + st.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0) + b"rest")
+
+
+def test_ico_wraps_png_and_rejects_other():
+    png = _mini_png()
+    ico = d._ico_from_png(png)
+    assert ico is not None and ico[:6] == b"\x00\x00\x01\x00\x01\x00"
+    assert ico[22:] == png, "PNG hoort integraal in de ICO-container (offset 22)"
+    assert d._ico_from_png(b"geen png") is None and d._ico_from_png(None) is None
+
+
+def test_logo_png_found_in_shipped_index():
+    png = d._logo_png_from_index()
+    assert png is not None and png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_launcher_noop_on_non_windows():
+    assert d.ensure_windows_launcher() is False   # CI/macOS: niets doen, niets stuk
+
+
+def test_launcher_creates_bat_ico_and_shortcut(monkeypatch, tmp_path):
+    monkeypatch.setattr(d.os, "name", "nt")
+    monkeypatch.setattr(d, "HERE", tmp_path)
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd
+        seen["vbs"] = open(cmd[-1], encoding="utf-8").read()
+        class R: pass
+        return R()
+
+    monkeypatch.setattr(d.subprocess, "run", fake_run)
+    assert d.ensure_windows_launcher() is True
+    bat = (tmp_path / "Dreamline.bat").read_text(encoding="ascii")
+    assert "dreamline.py" in bat and 'cd /d "%~dp0"' in bat
+    assert (tmp_path / "dreamline.ico").exists(), "logo-icoon hoort gemaakt te worden"
+    assert seen["cmd"][0] == "cscript"
+    assert 'CreateShortcut(desk & "\\Dreamline.lnk")' in seen["vbs"]
+    assert "WindowStyle = 7" in seen["vbs"], "console hoort geminimaliseerd te starten"
+    assert str(tmp_path / "Dreamline.bat") in seen["vbs"]
+
+
+# --------------------------------------------------------------------------
 # Storing-herstel (1.9.4): relay-antwoord lezen + niet-aangekomen items opnieuw
 # --------------------------------------------------------------------------
 class _BodyResp:

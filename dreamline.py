@@ -17,7 +17,7 @@ Open daarna op de iPad in Safari het adres dat hieronder geprint wordt
 
 import argparse, json, math, socket, threading, time, queue, webbrowser, sys
 import sqlite3, ast, datetime, glob, os, shutil, urllib.request, urllib.parse
-import hashlib, ipaddress
+import hashlib, ipaddress, base64, re, struct, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -31,7 +31,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.9.5"
+VERSION = "1.9.6"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 # Ingebouwde update-adressen: werkt ook als update_config.json ontbreekt of leeg is.
 # Meerdere hosts: sommige (winkel)netwerken blokkeren raw.githubusercontent.com;
@@ -1072,6 +1072,89 @@ def rollback_update():
         return {"ok": False, "error": "terugzetten mislukt: %s" % e}
     return {"ok": True, "to": prev or "vorige versie", "files": have}
 
+# --------------------------------------------------------------------------
+# Dubbelklik-start (Windows): Dreamline installeert zichzelf als 'programmaatje'
+# --------------------------------------------------------------------------
+def _launcher_bat_text(python_exe):
+    """Inhoud van Dreamline.bat: start de app altijd vanuit de juiste map, met
+    precies de Python die nu ook draait (dus ook een meegeleverde Python)."""
+    return ('@echo off\r\n'
+            'cd /d "%~dp0"\r\n'
+            '"' + str(python_exe) + '" dreamline.py\r\n')
+
+def _ico_from_png(png_bytes):
+    """Verpak een PNG als geldig .ico-bestand (Windows ondersteunt PNG-in-ICO).
+    Zo krijgt de snelkoppeling het eigen logo, zonder extra bestanden in de update."""
+    if not png_bytes or png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    try:
+        w, h = struct.unpack(">II", png_bytes[16:24])
+    except Exception:
+        return None
+    wb = 0 if w >= 256 else w
+    hb = 0 if h >= 256 else h
+    header = struct.pack("<HHH", 0, 1, 1)
+    entry = struct.pack("<BBBBHHII", wb, hb, 0, 0, 1, 32, len(png_bytes), 22)
+    return header + entry + png_bytes
+
+def _logo_png_from_index():
+    """Haal het Beans & Dreams-logo (PNG) uit index.html voor het snelkoppeling-icoon."""
+    try:
+        html = INDEX.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r'data:image/png;base64,([A-Za-z0-9+/=]+)', html)
+        if m:
+            return base64.b64decode(m.group(1))
+    except Exception:
+        pass
+    return None
+
+def ensure_windows_launcher():
+    """Maak op Windows een echte dubbelklik-start: 'Dreamline.bat' naast de app en
+    een snelkoppeling 'Dreamline' met logo op het bureaublad. Voortaan is één
+    dubbelklik genoeg; er hoeft niets meer gekozen te worden (chip aangesloten =
+    live meten, anders wacht de app vanzelf tot de chip er is). Faalt onschuldig:
+    lukt iets niet, dan blijft alles gewoon werken zoals voorheen."""
+    if os.name != "nt":
+        return False
+    ok = False
+    try:
+        (HERE / "Dreamline.bat").write_text(_launcher_bat_text(sys.executable), encoding="ascii", errors="replace")
+        ok = True
+    except Exception:
+        return False
+    try:
+        ico = _ico_from_png(_logo_png_from_index())
+        if ico:
+            (HERE / "dreamline.ico").write_bytes(ico)
+    except Exception:
+        pass
+    try:
+        icon_part = ''
+        if (HERE / "dreamline.ico").exists():
+            icon_part = 'lnk.IconLocation = "%s"\n' % str(HERE / "dreamline.ico")
+        vbs = ('Set ws = CreateObject("WScript.Shell")\n'
+               'desk = ws.SpecialFolders("Desktop")\n'
+               'Set lnk = ws.CreateShortcut(desk & "\\Dreamline.lnk")\n'
+               'lnk.TargetPath = "%s"\n'
+               'lnk.WorkingDirectory = "%s"\n'
+               'lnk.WindowStyle = 7\n'
+               'lnk.Description = "Dreamline roast-dashboard"\n'
+               '%s'
+               'lnk.Save\n') % (str(HERE / "Dreamline.bat"), str(HERE), icon_part)
+        fd, vbs_path = tempfile.mkstemp(suffix=".vbs")
+        with os.fdopen(fd, "w") as f:
+            f.write(vbs)
+        try:
+            subprocess.run(["cscript", "//nologo", vbs_path], timeout=20,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        finally:
+            try: os.unlink(vbs_path)
+            except Exception: pass
+    except Exception:
+        pass
+    return ok
+
+
 def _restart_soon(delay=1.5):
     def go():
         try: os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -1513,6 +1596,10 @@ def main():
                 print("  overgeslagen:  %s  (%s)" % (os.path.basename(f), e))
         print("\n  %d van %d .alog-bestanden in roasts.db gezet.\n" % (ok, len(files)))
         return
+
+    # eenmalig per start: dubbelklik-snelkoppeling op het bureaublad (alleen Windows)
+    if ensure_windows_launcher():
+        print("  Tip: op het bureaublad staat 'Dreamline' - voortaan is dubbelklikken genoeg.")
 
     target = sim_loop if args.sim else (lambda: sensor_loop(args.bt_ch, args.et_ch, args.tc, rtd=not args.thermocouple))
     threading.Thread(target=target, daemon=True).start()

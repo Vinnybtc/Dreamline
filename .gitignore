@@ -6,6 +6,8 @@ paired.json
 update_log.json
 backup/
 roasts.db
+Dreamline.bat
+dreamline.ico
 
 # Python / macOS rommel
 __pycache__/
