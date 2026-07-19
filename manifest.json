@@ -1,14 +1,14 @@
 {
-  "version": "1.9.7",
-  "notes": "Nieuw in 1.9.7:\n- Opgelost: de app kon tijdens het roosten soms even blijven hangen. Het automatisch controleren op updates gebeurt nu rustig op de achtergrond, zodat het scherm vlot blijft reageren.\n- De vertrouwde start ('Start Dreamline') werkt weer gewoon: er wordt niet meer ongevraagd een bureaublad-icoon geplaatst. Wil je zo'n icoon toch, dan kan dat voortaan op verzoek.\n- Al je opgeslagen roasts, instellingen en ijking blijven gewoon staan.",
+  "version": "1.9.8",
+  "notes": "Nieuw in 1.9.8:\n- De roostfases zijn weer duidelijk op de grafiek te zien: drogen, maillard en ontwikkeling als gekleurde vlakken met hun naam.\n- Bij elke gebeurtenis (keerpunt, first crack, drop) staat nu de tijd én de temperatuur op dat punt.\n- Werkt ook voor een geladen referentiecurve.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "77524e88883ca22d3ed96e83601245fc6f9fbeabf3577579c8d88d1ae0e30922",
-    "dreamline.py": "e98dc3e6206113c8f1358acfff273933733d4007f8e5bd9518c199e6edf775b9",
+    "index.html": "1ac6be00026dbbba0fec2932716458a82eafec4ea9460e0c6a59518d4bf887d5",
+    "dreamline.py": "1d2e93f4e037fd0729cbf098d897e0fa0241a866b98d3f27889ac12db26ef85e",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }

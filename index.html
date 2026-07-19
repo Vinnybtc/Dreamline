@@ -583,7 +583,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.9.7";
+const APP_VERSION = "1.9.8";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -748,13 +748,31 @@ function draw(){
   const Yt = v => PAD.t + (1-(v - tLo)/(tHi - tLo))*plotH;
   const Yr = v => PAD.t + (1-(v - 0)/(rorHi - 0))*plotH;
 
-  // phase bands
-  for(const [a,b,col] of PHASES){
-    const ta=state.events[a], tb=(state.events[b]!=null?state.events[b]:(a in state.events?state.t:null));
-    if(ta==null||tb==null||tb<=ta) continue;
-    ctx.fillStyle=css(col.match(/var\((.*)\)/)[1]);
-    ctx.fillRect(X(ta),PAD.t, X(tb)-X(ta), plotH);
+  // ---- fase-vlakken: drogen / maillard / ontwikkeling ----
+  // Duidelijk zichtbare gekleurde periodes, voor de live-roast én de referentie
+  // (klantwens). Kleuren volgen het fasepaneel: drogen=ET, maillard=goud, ontw.=BT.
+  const PH_DEFS=[["CHARGE","DRY","--et","Drogen"],["DRY","FCS","--gold","Maillard"],["FCS","DROP","--bt","Ontwikkeling"]];
+  function drawPhaseBands(events, endT, alpha, withLabels){
+    for(const [a,b,cvar] of PH_DEFS){
+      const ta=events[a]; let tb=events[b]; if(tb==null && a in events) tb=endT;
+      if(ta==null||tb==null||tb<=ta) continue;
+      ctx.save(); ctx.globalAlpha=alpha; ctx.fillStyle=css(cvar);
+      ctx.fillRect(X(ta),PAD.t, X(tb)-X(ta), plotH); ctx.restore();
+    }
+    if(!withLabels) return;
+    ctx.save(); ctx.globalAlpha=.85; ctx.font='10px Inter,system-ui';
+    ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+    for(const [a,b,cvar,name] of PH_DEFS){
+      const ta=events[a]; let tb=events[b]; if(tb==null && a in events) tb=endT;
+      if(ta==null||tb==null||tb<=ta || X(tb)-X(ta)<44) continue;   // te smal: naam weglaten
+      ctx.fillStyle=css(cvar); ctx.fillText(name, (X(ta)+X(tb))/2, PAD.t+plotH-6);
+    }
+    ctx.restore();
   }
+  // referentie-fasen subtiel eronder, live-fasen duidelijk erover
+  if(state.ref && state.ref.events && state.ref.samples && state.ref.samples.length)
+    drawPhaseBands(state.ref.events, state.ref.samples[state.ref.samples.length-1].t, .05, false);
+  drawPhaseBands(state.events, state.t, .13, true);
   // grid + temp axis
   ctx.font='11px Inter,system-ui'; ctx.textBaseline='middle';
   const tStep = state.unit==="F"?40:20;
@@ -816,15 +834,23 @@ function draw(){
     ctx.fillStyle=css('--bt'); ctx.shadowColor=css('--bt-glow'); ctx.shadowBlur=14;
     ctx.beginPath(); ctx.arc(x,y,4.5,0,7); ctx.fill(); ctx.shadowBlur=0;
   }
-  // event markers — labels wisselen van regel als ze elkaar raken (korte roast / smal scherm)
-  ctx.font='10px Inter,system-ui'; ctx.textAlign='center';
+  // event-markers: verticale lijn + punt op de curve, met naam, tijd én temperatuur
+  // op het specifieke punt (klantwens). Labels wisselen van regel bij overlap.
+  ctx.textAlign='center';
   let lastEvX=-1e9, evRow=0;
   const evs=Object.entries(state.events).filter(([k])=>k!=="CHARGE"&&(k in EV_LABEL)).sort((a,b)=>a[1]-b[1]);
+  const btAt=(t)=>{ if(!S.length) return null; let bst=S[0]; for(const s of S){ if(Math.abs(s.t-t)<Math.abs(bst.t-t)) bst=s; } return bst.bt; };
   for(const [type,t] of evs){
     const x=X(t); ctx.strokeStyle=css('--line'); ctx.setLineDash([2,3]);
     ctx.beginPath(); ctx.moveTo(x,PAD.t); ctx.lineTo(x,PAD.t+plotH); ctx.stroke(); ctx.setLineDash([]);
-    evRow = (x-lastEvX<34) ? (evRow+1)%2 : 0;
-    ctx.fillStyle=css('--text'); ctx.fillText(EV_LABEL[type], x, PAD.t+8+evRow*11);
+    const bt=btAt(t);
+    if(bt!=null){ const y=Yt(cToDisp(bt));
+      ctx.fillStyle=css('--text'); ctx.beginPath(); ctx.arc(x,y,3,0,7); ctx.fill(); }
+    evRow = (x-lastEvX<54) ? (evRow+1)%2 : 0;
+    const yLab=PAD.t+8+evRow*22;
+    ctx.font='10px Inter,system-ui'; ctx.fillStyle=css('--text'); ctx.fillText(EV_LABEL[type], x, yLab);
+    ctx.font='9px Inter,system-ui'; ctx.fillStyle=css('--muted');
+    ctx.fillText(bt==null? fmtTime(t) : (fmtTime(t)+"  "+Math.round(cToDisp(bt))+"°"), x, yLab+10);
     lastEvX=x;
   }
   // readouts
