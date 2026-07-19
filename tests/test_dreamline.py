@@ -148,6 +148,31 @@ def test_check_update_reports_error_when_all_hosts_fail(monkeypatch):
     assert r["error"]
 
 
+def test_update_cached_never_hits_network(monkeypatch):
+    # De pagina leest '/api/update/check' elke 2 min. Die cache-lezing mag NOOIT
+    # het netwerk op, anders kan de app tijdens het roosten blijven hangen.
+    d._UPD_CACHE["data"] = None
+    monkeypatch.setattr(d, "check_update",
+                        lambda: (_ for _ in ()).throw(AssertionError("netwerk tijdens cache-lezing")))
+    r = d._update_cached()
+    assert r["current"] == d.VERSION
+    assert r["reachable"] is False            # niets gecached -> veilig 'controleren...'
+
+
+def test_update_refresh_fills_cache_that_cached_then_serves(monkeypatch):
+    monkeypatch.setattr(d, "check_update",
+                        lambda: {"configured": True, "reachable": True, "current": d.VERSION,
+                                 "latest": "9.9.9", "update_available": True,
+                                 "notes": "n", "error": "", "source": "test"})
+    d._UPD_CACHE["data"] = None
+    fresh = d._update_refresh()
+    assert fresh["latest"] == "9.9.9"
+    # daarna serveert de cache hetzelfde, zónder opnieuw het netwerk op te gaan
+    monkeypatch.setattr(d, "check_update",
+                        lambda: (_ for _ in ()).throw(AssertionError("mag niet opnieuw checken")))
+    assert d._update_cached()["latest"] == "9.9.9"
+
+
 # --------------------------------------------------------------------------
 # Feedback forwarding stays hermetic and refuses insecure URLs
 # --------------------------------------------------------------------------

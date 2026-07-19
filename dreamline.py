@@ -31,7 +31,7 @@ except Exception:
     qr = None
 
 # --- versie & veilig updaten op afstand ------------------------------------
-VERSION = "1.9.6"
+VERSION = "1.9.7"
 CONFIG_PATH = HERE / "update_config.json"   # {"manifest_url": "https://.../manifest.json"}
 # Ingebouwde update-adressen: werkt ook als update_config.json ontbreekt of leeg is.
 # Meerdere hosts: sommige (winkel)netwerken blokkeren raw.githubusercontent.com;
@@ -997,6 +997,43 @@ def check_update():
     out["update_available"] = _ver_tuple(out["latest"]) > _ver_tuple(VERSION)
     return out
 
+# --- update-check zónder de app te laten haperen ---------------------------
+# De pagina vraagt elke 2 min '/api/update/check'. Die netwerk-check kan op een
+# (winkel)netwerk dat GitHub blokkeert tot ~16s duren. Vroeger draaide dat op de
+# verzoek-thread, waardoor de app tijdens het roosten kon lijken te "hangen".
+# Nu houdt een achtergrond-lus het antwoord vers en krijgt de pagina het meteen
+# uit de cache. Alleen een uitdrukkelijke klik op 'Updates' (fresh=1) doet nog
+# een live check.
+_UPD_CACHE = {"data": None, "ts": 0.0}
+_UPD_LOCK = threading.Lock()
+
+def _update_cached():
+    with _UPD_LOCK:
+        data = _UPD_CACHE["data"]
+    if data is not None:
+        return data
+    # nog niets in de cache (vlak na opstarten): veilig 'aan het kijken'-antwoord
+    return {"configured": True, "reachable": False, "current": VERSION,
+            "latest": None, "update_available": False, "notes": "",
+            "error": "controleren...", "source": ""}
+
+def _update_refresh():
+    """Doe de echte netwerk-check en zet het resultaat in de cache."""
+    data = check_update()
+    with _UPD_LOCK:
+        _UPD_CACHE["data"] = data
+        _UPD_CACHE["ts"] = time.time()
+    return data
+
+def _update_loop():
+    time.sleep(8)                # de app eerst rustig laten starten
+    while True:
+        try:
+            _update_refresh()
+        except Exception:
+            pass
+        time.sleep(1800)         # elk half uur; nooit op de verzoek-thread
+
 def apply_update():
     """Download nieuwe versie, valideer, maak back-up, schrijf. Niets-of-alles."""
     m, u, errors = _fetch_manifest()
@@ -1287,7 +1324,12 @@ class Handler(BaseHTTPRequestHandler):
                     fb = []
                 self._send(200, "application/json", json.dumps(fb, ensure_ascii=False).encode())
             elif path == "/api/update/check":
-                self._send(200, "application/json", json.dumps(check_update()).encode())
+                # standaard: meteen uit de cache (nooit blokkeren tijdens gebruik).
+                # fresh=1 (klik op 'Updates') forceert een live check.
+                q = urllib.parse.urlparse(self.path).query
+                fresh = urllib.parse.parse_qs(q).get("fresh", ["0"])[0] == "1"
+                data = _update_refresh() if fresh else _update_cached()
+                self._send(200, "application/json", json.dumps(data).encode())
             elif path == "/qr.svg":
                 if qr is None:
                     self._send(500, "text/plain", b"qr.py ontbreekt naast dreamline.py")
@@ -1557,6 +1599,8 @@ def main():
     ap.add_argument("--version", action="store_true", help="toon versie en stop")
     ap.add_argument("--check-update", action="store_true", help="controleer op updates en stop")
     ap.add_argument("--rollback", action="store_true", help="zet de vorige versie terug en stop")
+    ap.add_argument("--install-shortcut", action="store_true",
+                    help="(Windows) zet eenmalig een 'Dreamline'-snelkoppeling op het bureaublad")
     args = ap.parse_args()
 
     if args.version:
@@ -1597,14 +1641,18 @@ def main():
         print("\n  %d van %d .alog-bestanden in roasts.db gezet.\n" % (ok, len(files)))
         return
 
-    # eenmalig per start: dubbelklik-snelkoppeling op het bureaublad (alleen Windows)
-    if ensure_windows_launcher():
-        print("  Tip: op het bureaublad staat 'Dreamline' - voortaan is dubbelklikken genoeg.")
+    # Bureaublad-snelkoppeling alleen op uitdrukkelijk verzoek (--install-shortcut).
+    # NIET meer automatisch bij elke start: de vertrouwde 'Start Dreamline' blijft
+    # altijd werken, ook als een snelkoppeling op een specifieke pc niet goed valt.
+    if args.install_shortcut and ensure_windows_launcher():
+        print("  Op het bureaublad staat nu 'Dreamline'.")
 
     target = sim_loop if args.sim else (lambda: sensor_loop(args.bt_ch, args.et_ch, args.tc, rtd=not args.thermocouple))
     threading.Thread(target=target, daemon=True).start()
     # niet-aangekomen opmerkingen/meldingen automatisch opnieuw versturen (na storingen)
     threading.Thread(target=_retry_loop, daemon=True).start()
+    # update-antwoord vers houden in de achtergrond, zodat de pagina nooit wacht
+    threading.Thread(target=_update_loop, daemon=True).start()
 
     try:
         srv = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)

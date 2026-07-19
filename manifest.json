@@ -1,14 +1,14 @@
 {
-  "version": "1.9.6",
-  "notes": "Nieuw in 1.9.6:\n- Dreamline wordt een echt programmaatje: na deze update verschijnt er vanzelf een 'Dreamline'-icoon op het bureaublad, met het Beans & Dreams-logo.\n- Voortaan is dubbelklikken op dat icoon genoeg. Geen keuzemenu meer: de app start direct, en kiest zelf — chip aangesloten is live meten, geen chip is netjes wachten tot hij erin zit.\n- Eén keer nodig: start Dreamline nu nog op de vertrouwde manier en installeer deze update. Het icoon staat er daarna vanzelf; de oude startmanier heb je dan niet meer nodig.\n- Al je opgeslagen roasts, instellingen en ijking blijven gewoon staan.",
+  "version": "1.9.7",
+  "notes": "Nieuw in 1.9.7:\n- Opgelost: de app kon tijdens het roosten soms even blijven hangen. Het automatisch controleren op updates gebeurt nu rustig op de achtergrond, zodat het scherm vlot blijft reageren.\n- De vertrouwde start ('Start Dreamline') werkt weer gewoon: er wordt niet meer ongevraagd een bureaublad-icoon geplaatst. Wil je zo'n icoon toch, dan kan dat voortaan op verzoek.\n- Al je opgeslagen roasts, instellingen en ijking blijven gewoon staan.",
   "files": [
     "index.html",
     "dreamline.py",
     "qr.py"
   ],
   "sha256": {
-    "index.html": "542d27788de298d976eb81260a47db0791f8ed6cb13a5d6a8c141648b654580d",
-    "dreamline.py": "1d04f767d2c4042e65bf3a4ac3ca3e273eaf2c81f1e0c27cfa608eaf8352b0bd",
+    "index.html": "77524e88883ca22d3ed96e83601245fc6f9fbeabf3577579c8d88d1ae0e30922",
+    "dreamline.py": "e98dc3e6206113c8f1358acfff273933733d4007f8e5bd9518c199e6edf775b9",
     "qr.py": "d9b9288a57b37d7b130eca71a28f9220b1d408804f36438f680f25957f90780e"
   }
 }

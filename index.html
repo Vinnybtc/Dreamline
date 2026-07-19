@@ -583,7 +583,7 @@ footer{flex:0 0 auto; border-top:1px solid var(--line); padding:13px 22px; displ
 
 <script>
 "use strict";
-const APP_VERSION = "1.9.6";
+const APP_VERSION = "1.9.7";
 const EV_LABEL = {CHARGE:"CHARGE", TP:"TP", DRY:"DRY", FCS:"FCs", FCE:"FCe", DROP:"DROP"};
 const PHASES = [["CHARGE","DRY","var(--ph-dry)"],["DRY","FCS","var(--ph-mai)"],["FCS","DROP","var(--ph-dev)"]];
 
@@ -1192,7 +1192,7 @@ function openUpd(){ openOv("#ovUpd"); doUpdCheck(); }
 async function doUpdCheck(){
   const body=$("#updBody"); $("#btnUpdApply").hidden=true; $("#updHint").textContent="";
   body.innerHTML='<div class="empty">Controleren…</div>';
-  let r; try{ r=await fetch("/api/update/check").then(x=>x.json()); }
+  let r; try{ r=await fetch("/api/update/check?fresh=1").then(x=>x.json()); }
   catch(_){ body.innerHTML='<div class="empty">Kon niet controleren (geen verbinding).</div>'; return; }
   if(r.current){ const vl=$("#verLabel"); if(vl) vl.textContent="v"+r.current; }
   if(!r.configured){ body.innerHTML='<div class="empty">Updates zijn nog niet ingesteld.</div>'; return; }
